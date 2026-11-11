@@ -1,0 +1,11 @@
+.git
+.venv
+__pycache__
+*.pyc
+tests
+.pytest_cache
+.claude
+.env
+prijzen.xlsx
+material_market_share*.xlsx
+UN_comtrade_codes.xlsx

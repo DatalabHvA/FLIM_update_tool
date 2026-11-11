@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLIM update tool</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <h1>FLIM update tool</h1>
+  <p class="sub">Haalt importcijfers (UN Comtrade) en prijsindices (Destatis, FRED) op en maakt
+    <code>material_market_share.xlsx</code> en <code>prijzen.xlsx</code> voor de FLIM-tool.</p>
+</header>
+
+<main>
+  <!-- 1. input -->
+  <section class="card" id="step-input">
+    <h2><span class="num">1</span> Invoer</h2>
+    <p>Eén Excel-bestand met een blad per platform: <b>Comtrade</b>, <b>Destatis</b> en <b>FRED</b>,
+      elk met de kolommen <b>Materiaal</b> en <b>Code</b> (Destatis/FRED ook <b>ID</b> = FLIM-materiaal-id,
+      Destatis optioneel <b>Tabel</b>).
+      <a href="/api/template">Download het voorbeeldbestand</a>.</p>
+    <div class="keys" id="keys"></div>
+    <label class="drop" id="drop">
+      <input type="file" id="file" accept=".xlsx">
+      <span id="drop-text">Sleep een .xlsx hierheen of klik om te kiezen</span>
+    </label>
+  </section>
+
+  <!-- 2. check -->
+  <section class="card hidden" id="step-check">
+    <h2><span class="num">2</span> Controle</h2>
+    <div id="messages"></div>
+    <div class="tabs" id="preview-tabs"></div>
+    <div class="table-wrap"><table id="preview"></table></div>
+  </section>
+
+  <!-- 3. settings -->
+  <section class="card hidden" id="step-settings">
+    <h2><span class="num">3</span> Instellingen</h2>
+    <div class="grid">
+      <fieldset>
+        <legend>Platforms</legend>
+        <label><input type="checkbox" name="platform" value="comtrade" checked> UN Comtrade</label>
+        <label><input type="checkbox" name="platform" value="destatis" checked> Destatis</label>
+        <label><input type="checkbox" name="platform" value="fred" checked> FRED</label>
+      </fieldset>
+      <fieldset>
+        <legend>Marktaandelen (Comtrade)</legend>
+        <label>Jaar <input id="comtrade_period" size="6"></label>
+        <label>Rapporteur <input id="comtrade_reporter" size="4"> <small>528 = Nederland</small></label>
+      </fieldset>
+      <fieldset>
+        <legend>Prijzen (Destatis / FRED)</legend>
+        <label>Startmaand <input id="prices_start" size="8" placeholder="JJJJ-MM"> <small>= basis (1,0)</small></label>
+        <label>Eindmaand <input id="prices_end" size="8" placeholder="leeg = alles"></label>
+        <label>Destatis-tabel <input id="destatis_table" size="11"> <small>als kolom Tabel leeg is</small></label>
+      </fieldset>
+    </div>
+    <div class="actions">
+      <button id="start" class="primary">Start update</button>
+      <span id="start-msg" class="muted"></span>
+    </div>
+  </section>
+
+  <!-- 4. progress -->
+  <section class="card hidden" id="step-progress">
+    <h2><span class="num">4</span> Voortgang <span id="run-state" class="pill"></span>
+      <span id="elapsed" class="muted small"></span></h2>
+    <div id="platforms" class="platforms"></div>
+    <div class="row-between">
+      <div class="filters">
+        <label><input type="radio" name="filter" value="all" checked> Alles</label>
+        <label><input type="radio" name="filter" value="problems"> Alleen problemen</label>
+      </div>
+      <button id="cancel" class="danger hidden">Afbreken</button>
+    </div>
+    <div class="table-wrap tall"><table id="items"></table></div>
+    <details id="log-box">
+      <summary>Log (<span id="log-count">0</span> regels)</summary>
+      <pre id="log"></pre>
+    </details>
+  </section>
+
+  <!-- 5. results -->
+  <section class="card hidden" id="step-results">
+    <h2><span class="num">5</span> Resultaat</h2>
+    <div id="result-banner"></div>
+    <div id="downloads" class="downloads"></div>
+    <p class="muted small">De bestanden blijven beschikbaar tot de server herstart. Download ze direct.</p>
+    <button id="again">Nieuwe update</button>
+  </section>
+</main>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
