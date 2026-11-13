@@ -172,3 +172,33 @@ def test_bad_settings_and_auth(client, monkeypatch):
     assert client.get("/api/config").status_code == 401
     assert client.get("/api/config", auth=("hva", "geheim")).status_code == 200
     assert client.get("/healthz").status_code == 200
+
+
+def test_real_price_functions_with_log_hooks(monkeypatch):
+    """The real get_destatis_prices / get_fred_prices with log= and on_code= (HTTP faked)."""
+    monkeypatch.setenv("DESTATIS_TOKEN", "t")
+    monkeypatch.setenv("FRED_API_KEY", "k")
+    monkeypatch.setattr(fetch_prices, "_resolve_classifying_variable",
+                        lambda *a, **k: "GP19M6")
+    monkeypatch.setattr(fetch_prices, "_download_destatis_ffcsv", lambda code, **k: "csv")
+    monkeypatch.setattr(fetch_prices, "parse_destatis_ffcsv",
+                        lambda text, *, code, **k: (monthly(code), {}))
+
+    class FakeResp:
+        status_code = 200
+
+        def json(self):
+            return {"observations": [{"date": "2015-01-01", "value": "100"},
+                                     {"date": "2015-02-01", "value": "101"}]}
+
+    monkeypatch.setattr(fetch_prices, "_request", lambda *a, **k: FakeResp())
+
+    lines, events = [], []
+    on_code = lambda code, status, detail: events.append((code, status))  # noqa: E731
+    df = fetch_prices.get_destatis_prices(["GP19-1"], log=lines.append, on_code=on_code)
+    assert list(df.columns) == ["GP19-1"] and not df.attrs["failed"]
+    df = fetch_prices.get_fred_prices(["PCU1"], log=lines.append, on_code=on_code)
+    assert list(df.columns) == ["PCU1"] and not df.attrs["failed"]
+    assert events == [("GP19-1", "running"), ("GP19-1", "ok"),
+                      ("PCU1", "running"), ("PCU1", "ok")]
+    assert any("GP19-1" in line for line in lines)

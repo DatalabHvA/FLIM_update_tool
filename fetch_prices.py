@@ -62,7 +62,7 @@ from typing import Iterable, Optional, Union
 import pandas as pd
 import requests
 
-log = logging.getLogger("fetch_prices")
+logger = logging.getLogger("fetch_prices")
 
 # Base URL as given in the official GENESIS web service documentation (REST, v2020 path).
 DESTATIS_BASE_URL = "https://genesis.destatis.de/genesisWS/rest/2020/"
@@ -355,7 +355,7 @@ def _resolve_classifying_variable(table: str, requested: Optional[str], language
             meta = _fetch_metadata(table, language, headers, base_url)
         except DestatisError as exc:
             if requested:
-                log.warning("Could not read the metadata of table %s (%s); using "
+                logger.warning("Could not read the metadata of table %s (%s); using "
                             "classifying_variable=%s without checking it.", table, exc, requested)
                 return requested
             raise DestatisError("Could not read the metadata of table %s to find the GP variable "
@@ -367,11 +367,11 @@ def _resolve_classifying_variable(table: str, requested: Optional[str], language
         if candidates:
             raise DestatisError("Variable %r is not in the metadata of table %s; the GP19M... "
                                 "variables found there are: %s." % (requested, table, candidates))
-        log.warning("Cannot confirm variable %s in the metadata of table %s; continuing.",
+        logger.warning("Cannot confirm variable %s in the metadata of table %s; continuing.",
                     requested, table)
         return requested
     if len(candidates) == 1:
-        log.info("Table %s: using variable %s from its metadata", table, candidates[0])
+        logger.info("Table %s: using variable %s from its metadata", table, candidates[0])
         return candidates[0]
     raise DestatisError("Expected exactly one GP19M<n> variable in the metadata of table %s but "
                         "found: %s. Pass classifying_variable= explicitly."
@@ -394,7 +394,7 @@ def _run_destatis_job(code: str, params: dict, headers: dict, base_url: str,
         raise DestatisError("Could not find a job id in the GENESIS answer for %s: %s"
                             % (code, str(status)[:500]))
     job_id = match.group(0).strip()
-    log.info("Destatis job %s started for %s", job_id, code)
+    logger.info("Destatis job %s started for %s", job_id, code)
 
     deadline = time.monotonic() + job_timeout
     while True:
@@ -530,7 +530,7 @@ def parse_destatis_ffcsv(text: str, *, code: str, classifying_variable: str,
     answer_variable = df["%d_variable_code" % code_num].iloc[0]
     meta["answer_variable"] = answer_variable
     if answer_variable != classifying_variable:
-        log.info("Code %s is delivered under variable %s (request used %s).",
+        logger.info("Code %s is delivered under variable %s (request used %s).",
                  code, answer_variable, classifying_variable)
 
     # --- month of each observation -------------------------------------------------------
@@ -608,7 +608,7 @@ def get_destatis_prices(codes: CodeList, start="2015-01", end=None, *,
     metadata = {}
 
     def fetch_one(code):
-        log.info("Destatis %s: table %s, %s = %s", code, table, variable, code)
+        logger.info("Destatis %s: table %s, %s = %s", code, table, variable, code)
         text = _download_destatis_ffcsv(
             code, table=table, classifying_variable=variable,
             start_year=start_ts.year if start_ts is not None else None,
@@ -644,7 +644,7 @@ def _fred_series(code: str, key: str, start_ts, end_ts, frequency, aggregation_m
     if frequency:
         params["frequency"] = frequency
         params["aggregation_method"] = aggregation_method
-    log.info("FRED %s", code)
+    logger.info("FRED %s", code)
     resp = _request("GET", FRED_OBSERVATIONS_URL, params=params, timeout=(10, 60),
                     secrets=(key,))
     if resp.status_code != 200:
@@ -659,7 +659,7 @@ def _fred_series(code: str, key: str, start_ts, end_ts, frequency, aggregation_m
                         % (code, sorted(payload)))
     obs = pd.DataFrame(payload["observations"], columns=["date", "value"])
     if obs.empty:
-        log.warning("FRED %s returned no observations for the requested period", code)
+        logger.warning("FRED %s returned no observations for the requested period", code)
         return pd.Series(dtype=float, name=code, index=pd.DatetimeIndex([], name="month"))
     values = pd.to_numeric(obs["value"], errors="coerce")
     unparsed = values.isna() & (obs["value"] != ".")   # "." = missing value in FRED
