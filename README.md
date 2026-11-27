@@ -26,6 +26,15 @@ The fetching itself is done by [comtrade_imports.py](comtrade_imports.py) and [f
 They still work as before in a notebook or from the command line. The tool only adds the optional
 `log=` / `on_progress=` / `on_code=` hooks for progress reporting.
 
+## Destatis codes and tables
+
+The default table is **61241-0004**. It has one variable per GP 2019 code level: 2-, 3-, 4-, 5-, 6- and
+selected 9-digit codes. The tool counts the digits after `GP19`, ignoring dashes, and uses the
+variable for that level. For example, `GP19-0811` gives 4 digits, `GP19-237011` gives 6 and `GP19-233110002` gives 9.
+The variable names are read from the table's metadata on every run. If a code matches no variable,
+only that code fails, and its message lists the variables the table has.
+A different table per code can be set in the `Tabel` column, for example the older 61241-0006.
+
 ## Environment variables
 
 | Variable | Purpose |

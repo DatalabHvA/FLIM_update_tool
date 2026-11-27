@@ -21,6 +21,8 @@ from typing import Optional
 import openpyxl
 
 PLATFORMS = ("comtrade", "destatis", "fred")
+# GP 2019 code levels in Destatis table 61241-0004 (digits after "GP19", dashes ignored)
+DESTATIS_DIGIT_LEVELS = (2, 3, 4, 5, 6, 9)
 PLATFORM_LABELS = {"comtrade": "UN Comtrade", "destatis": "Destatis", "fred": "FRED"}
 
 COLUMN_ALIASES = {
@@ -105,9 +107,14 @@ def _normalise_code(platform, raw, cell_value, where, warnings):
             warnings.append("%s: HS-code %s heeft %d cijfers (verwacht 2, 4 of 6)."
                             % (where, code, len(code)))
     elif platform == "destatis":
-        if not re.fullmatch(r"GP19-\d+", code, re.I):
-            warnings.append("%s: Destatis-code %r lijkt niet op GP19-<cijfers>." % (where, raw))
         code = code.upper()
+        digits = len(re.sub(r"\D", "", code[4:])) if code.startswith("GP19") else 0
+        if not re.fullmatch(r"GP19-[\d-]*\d", code):
+            warnings.append("%s: Destatis-code %r lijkt niet op GP19-<cijfers>." % (where, raw))
+        elif digits not in DESTATIS_DIGIT_LEVELS:
+            warnings.append("%s: Destatis-code %s heeft %d cijfers; Destatis kent codes van %s "
+                            "cijfers." % (where, code, digits,
+                                          ", ".join(map(str, DESTATIS_DIGIT_LEVELS))))
     elif platform == "fred":
         code = code.upper()
         if not re.fullmatch(r"[A-Z0-9_]+", code):

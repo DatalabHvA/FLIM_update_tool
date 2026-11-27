@@ -66,8 +66,9 @@ logger = logging.getLogger("fetch_prices")
 
 # Base URL as given in the official GENESIS web service documentation (REST, v2020 path).
 DESTATIS_BASE_URL = "https://genesis.destatis.de/genesisWS/rest/2020/"
-# Table "Erzeugerpreisindex gewerblicher Produkte" by GP 2019 code (from your link).
-DESTATIS_DEFAULT_TABLE = "61241-0006"
+# Table "Erzeugerpreisindex gewerblicher Produkte" by GP 2019 code. 61241-0004 has the 2-, 3-,
+# 4-, 5-, 6- and selected 9-digit codes (one variable per level); 61241-0006 has fewer codes.
+DESTATIS_DEFAULT_TABLE = "61241-0004"
 # Measure that was selected in your chart link ("content": "PRE001$QMU").
 DESTATIS_DEFAULT_MEASURE = "PRE001"
 FRED_OBSERVATIONS_URL = "https://api.stlouisfed.org/fred/series/observations"
@@ -341,13 +342,39 @@ def _fetch_metadata(table: str, language: str, headers: dict, base_url: str,
     return obj
 
 
-def _resolve_classifying_variable(table: str, requested: Optional[str], language: str,
-                                  headers: dict, base_url: str) -> str:
-    """Find (or check) the GENESIS variable that holds the GP code, from the table metadata.
+# Variable names of the GP 2019 classification in GENESIS, e.g. GP19M2 ... GP19M6 for the
+# 2- to 6-digit codes. The trailing number is taken as the number of digits of the codes
+# the variable holds (assumption based on GP19M6 / GP19M3; the 9-digit variable of table
+# 61241-0004 is expected to end in 9 as well - check the error message if it does not).
+_GP_VARIABLE = r"^GP19[A-Z]+\d+$"
 
-    Nothing is guessed: without 'requested' the table must contain exactly one GP19M<n>
-    variable; with 'requested' it must be present in the metadata (if the metadata shows
-    other GP19M variables). One metadata request per table is cached for the session.
+
+def gp_digits(code: str) -> Optional[int]:
+    """Number of digits after 'GP19' (dashes ignored): GP19-0811 -> 4, GP19-233110002 -> 9."""
+    match = re.match(r"^GP19(.*)$", str(code).strip(), re.I)
+    if not match:
+        return None
+    digits = re.sub(r"\D", "", match.group(1))
+    return len(digits) or None
+
+
+def _gp_variables_by_digits(candidates: list) -> dict:
+    by_digits = {}
+    for name in candidates:
+        by_digits.setdefault(int(re.search(r"(\d+)$", name).group(1)), []).append(name)
+    return by_digits
+
+
+def _resolve_classifying_variable(table: str, requested: Optional[str], language: str,
+                                  headers: dict, base_url: str):
+    """Return a function code -> GENESIS variable that holds that GP code.
+
+    With 'requested' that variable is used for every code (checked against the table
+    metadata when it can be read). Without it the variables are read from the metadata:
+    a table with one GP19 variable uses it for all codes; a table with several (e.g.
+    61241-0004: 2-, 3-, 4-, 5-, 6- and 9-digit codes) gets, per code, the variable whose
+    name ends in the code's number of digits (gp_digits). A code that matches no variable
+    raises DestatisError for that code only. The metadata is cached per table.
     """
     meta = _META_CACHE.get((base_url, table))
     if meta is None:
@@ -356,26 +383,48 @@ def _resolve_classifying_variable(table: str, requested: Optional[str], language
         except DestatisError as exc:
             if requested:
                 logger.warning("Could not read the metadata of table %s (%s); using "
-                            "classifying_variable=%s without checking it.", table, exc, requested)
-                return requested
+                               "classifying_variable=%s without checking it.", table, exc,
+                               requested)
+                return lambda code: requested
             raise DestatisError("Could not read the metadata of table %s to find the GP variable "
                                 "(%s). Pass classifying_variable= explicitly." % (table, exc))
-    candidates = find_in_metadata(meta, r"^GP19M\d+$")
+    candidates = find_in_metadata(meta, _GP_VARIABLE)
     if requested:
         if find_in_metadata(meta, "^%s$" % re.escape(requested)):
-            return requested
+            return lambda code: requested
         if candidates:
-            raise DestatisError("Variable %r is not in the metadata of table %s; the GP19M... "
+            raise DestatisError("Variable %r is not in the metadata of table %s; the GP19 "
                                 "variables found there are: %s." % (requested, table, candidates))
         logger.warning("Cannot confirm variable %s in the metadata of table %s; continuing.",
-                    requested, table)
-        return requested
+                       requested, table)
+        return lambda code: requested
+    if not candidates:
+        raise DestatisError("No GP19<letters><number> variable found in the metadata of table %s. "
+                            "Pass classifying_variable= explicitly." % table)
     if len(candidates) == 1:
         logger.info("Table %s: using variable %s from its metadata", table, candidates[0])
-        return candidates[0]
-    raise DestatisError("Expected exactly one GP19M<n> variable in the metadata of table %s but "
-                        "found: %s. Pass classifying_variable= explicitly."
-                        % (table, candidates or "none"))
+        return lambda code: candidates[0]
+
+    by_digits = _gp_variables_by_digits(candidates)
+    logger.info("Table %s: GP19 variables per number of digits: %s", table,
+                ", ".join("%d: %s" % (n, "/".join(v)) for n, v in sorted(by_digits.items())))
+
+    def pick(code):
+        n = gp_digits(code)
+        if n is None:
+            raise DestatisError("Code %s does not look like GP19-<digits>; cannot choose a "
+                                "variable of table %s." % (code, table))
+        names = by_digits.get(n, [])
+        if len(names) == 1:
+            return names[0]
+        if not names:
+            raise DestatisError("Code %s has %d digits, but table %s has no GP19 variable for "
+                                "%d-digit codes (variables found: %s)."
+                                % (code, n, table, n, ", ".join(candidates)))
+        raise DestatisError("Code %s has %d digits and table %s has several matching variables "
+                            "(%s). Pass classifying_variable= explicitly."
+                            % (code, n, table, ", ".join(names)))
+    return pick
 
 
 def _run_destatis_job(code: str, params: dict, headers: dict, base_url: str,
@@ -590,8 +639,10 @@ def get_destatis_prices(codes: CodeList, start="2015-01", end=None, *,
     a code fails; df.attrs['completed'] / df.attrs['failed'] ({code: message}) tell which
     codes made it. on_error="raise" stops at the first failing code (full traceback).
     classifying_variable=None reads the variable that holds the GP code from the table
-    metadata (the table must have exactly one GP19M<n> variable); a given name is checked
-    against the metadata before any data is requested.
+    metadata: one GP19 variable is used for all codes; with several (table 61241-0004) each
+    code gets the variable for its number of digits (GP19-0811 -> 4-digit variable,
+    GP19-233110002 -> 9-digit variable). A given name is checked against the metadata
+    before any data is requested and used for every code.
     allow_job=True lets the function start a GENESIS background job when the server answers
     'too big' (status 98); this needs username/password, not a token.
     """
@@ -604,10 +655,12 @@ def get_destatis_prices(codes: CodeList, start="2015-01", end=None, *,
     if raw_path:
         raw_path.mkdir(parents=True, exist_ok=True)
 
-    variable = _resolve_classifying_variable(table, classifying_variable, language, headers, base)
+    variable_for = _resolve_classifying_variable(table, classifying_variable, language, headers,
+                                                 base)
     metadata = {}
 
     def fetch_one(code):
+        variable = variable_for(code)
         logger.info("Destatis %s: table %s, %s = %s", code, table, variable, code)
         text = _download_destatis_ffcsv(
             code, table=table, classifying_variable=variable,

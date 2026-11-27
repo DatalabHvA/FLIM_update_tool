@@ -179,7 +179,7 @@ def test_real_price_functions_with_log_hooks(monkeypatch):
     monkeypatch.setenv("DESTATIS_TOKEN", "t")
     monkeypatch.setenv("FRED_API_KEY", "k")
     monkeypatch.setattr(fetch_prices, "_resolve_classifying_variable",
-                        lambda *a, **k: "GP19M6")
+                        lambda *a, **k: (lambda code: "GP19M6"))
     monkeypatch.setattr(fetch_prices, "_download_destatis_ffcsv", lambda code, **k: "csv")
     monkeypatch.setattr(fetch_prices, "parse_destatis_ffcsv",
                         lambda text, *, code, **k: (monthly(code), {}))
@@ -202,3 +202,39 @@ def test_real_price_functions_with_log_hooks(monkeypatch):
     assert events == [("GP19-1", "running"), ("GP19-1", "ok"),
                       ("PCU1", "running"), ("PCU1", "ok")]
     assert any("GP19-1" in line for line in lines)
+
+
+def test_destatis_variable_chosen_by_digit_count(monkeypatch):
+    """Table with one GP19 variable per code level: each code gets the variable for its digits."""
+    monkeypatch.setenv("DESTATIS_TOKEN", "t")
+    fetch_prices._META_CACHE.clear()
+    meta = {"Object": {"Content": {"variables": [
+        {"code": name} for name in ("GP19M2", "GP19M3", "GP19M4", "GP19M6", "GP19S9")]}}}
+    monkeypatch.setattr(fetch_prices, "_fetch_metadata", lambda *a, **k: meta)
+    used = {}
+
+    def fake_download(code, *, classifying_variable, **k):
+        used[code] = classifying_variable
+        return "csv"
+
+    monkeypatch.setattr(fetch_prices, "_download_destatis_ffcsv", fake_download)
+    monkeypatch.setattr(fetch_prices, "parse_destatis_ffcsv",
+                        lambda text, *, code, **k: (monthly(code), {}))
+    codes = ["GP19-23", "GP19-237", "GP19-0811", "GP19-23--31", "GP19-237011",
+             "GP19-233110002", "GP19-23311"]
+    df = fetch_prices.get_destatis_prices(codes, table="61241-0004", log=lambda m: None)
+    assert used == {"GP19-23": "GP19M2", "GP19-237": "GP19M3", "GP19-0811": "GP19M4",
+                    "GP19-23--31": "GP19M4", "GP19-237011": "GP19M6",
+                    "GP19-233110002": "GP19S9"}
+    # 5 digits: no variable in this (fake) table -> only that code fails, with the reason
+    assert list(df.attrs["failed"]) == ["GP19-23311"]
+    assert "5 digits" in df.attrs["failed"]["GP19-23311"]
+    assert "GP19M2" in df.attrs["failed"]["GP19-23311"]
+    fetch_prices._META_CACHE.clear()
+
+
+def test_gp_digits():
+    assert fetch_prices.gp_digits("GP19-0811") == 4
+    assert fetch_prices.gp_digits("gp19-233110002") == 9
+    assert fetch_prices.gp_digits("GP19-23--31") == 4
+    assert fetch_prices.gp_digits("PCU1") is None
