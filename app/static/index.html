@@ -9,7 +9,7 @@
 <body>
 <header>
   <h1>FLIM update tool</h1>
-  <p class="sub">Haalt importcijfers (UN Comtrade) en prijsindices (Destatis, FRED) op en maakt
+  <p class="sub">Haalt importcijfers (UN Comtrade) en prijsindices (CBS, Destatis, FRED, Eurostat) op en maakt
     <code>material_market_share.xlsx</code> en <code>prijzen.xlsx</code> voor de FLIM-tool.</p>
 </header>
 
@@ -17,9 +17,9 @@
   <!-- 1. input -->
   <section class="card" id="step-input">
     <h2><span class="num">1</span> Invoer</h2>
-    <p>Eén Excel-bestand met een blad per platform: <b>Comtrade</b>, <b>Destatis</b> en <b>FRED</b>,
-      elk met de kolommen <b>Materiaal</b> en <b>Code</b> (Destatis/FRED ook <b>ID</b> = FLIM-materiaal-id,
-      Destatis optioneel <b>Tabel</b>).
+    <p>Eén Excel-bestand met een blad per platform: <b>Comtrade</b>, <b>CBS</b>, <b>Destatis</b>, <b>FRED</b>
+      en <b>Eurostat</b>, elk met de kolommen <b>Materiaal</b> en <b>Code</b> (prijsbronnen ook <b>ID</b> =
+      FLIM-materiaal-id; CBS optioneel <b>Prijs</b>, Destatis optioneel <b>Tabel</b>, Eurostat optioneel <b>Land</b>).
       <a href="/api/template">Download het voorbeeldbestand</a>.</p>
     <div class="keys" id="keys"></div>
     <label class="drop" id="drop">
@@ -43,8 +43,10 @@
       <fieldset>
         <legend>Platforms</legend>
         <label><input type="checkbox" name="platform" value="comtrade" checked> UN Comtrade</label>
+        <label><input type="checkbox" name="platform" value="cbs" checked> CBS <small>(marktprijzen NL)</small></label>
         <label><input type="checkbox" name="platform" value="destatis" checked> Destatis</label>
         <label><input type="checkbox" name="platform" value="fred" checked> FRED</label>
+        <label><input type="checkbox" name="platform" value="eurostat" checked> Eurostat</label>
       </fieldset>
       <fieldset>
         <legend>Marktaandelen (Comtrade)</legend>
@@ -52,10 +54,11 @@
         <label>Rapporteur <input id="comtrade_reporter" size="4"> <small>528 = Nederland</small></label>
       </fieldset>
       <fieldset>
-        <legend>Prijzen (Destatis / FRED)</legend>
+        <legend>Prijzen (CBS / Destatis / FRED / Eurostat)</legend>
         <label>Startmaand <input id="prices_start" size="8" placeholder="JJJJ-MM"> <small>= basis (1,0)</small></label>
         <label>Eindmaand <input id="prices_end" size="8" placeholder="leeg = alles"></label>
         <label>Destatis-tabel <input id="destatis_table" size="11"> <small>als kolom Tabel leeg is</small></label>
+        <label>Eurostat-land <input id="eurostat_geo" size="11"> <small>als kolom Land leeg is</small></label>
       </fieldset>
     </div>
     <div class="actions">

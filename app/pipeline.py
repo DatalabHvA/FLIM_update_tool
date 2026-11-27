@@ -21,7 +21,7 @@ import comtrade_imports
 import fetch_prices
 
 from . import outputs
-from .inputs import PLATFORM_LABELS, PLATFORMS, ParsedInput
+from .inputs import PLATFORM_LABELS, PLATFORMS, PRICE_PLATFORMS, ParsedInput
 
 STATUS_LABELS = {
     "pending": "wacht", "running": "bezig", "fetched": "opgehaald", "ok": "gelukt",
@@ -32,6 +32,8 @@ CREDENTIALS = {
     "comtrade": (("COMTRADE_API_KEY",),),
     "destatis": (("DESTATIS_TOKEN",), ("DESTATIS_USER", "DESTATIS_PASSWORD")),
     "fred": (("FRED_API_KEY",),),
+    "eurostat": ((),),          # public API, no key needed
+    "cbs": ((),),               # public API, no key needed
 }
 
 
@@ -41,7 +43,23 @@ def credentials_present(platform: str) -> bool:
 
 
 def credential_hint(platform: str) -> str:
-    return " of ".join(" + ".join(g) for g in CREDENTIALS[platform])
+    return " of ".join(" + ".join(g) for g in CREDENTIALS[platform] if g)
+
+
+def needs_credentials(platform: str) -> bool:
+    return any(CREDENTIALS[platform]) and all(CREDENTIALS[platform])
+
+
+def _group_of(platform: str, table, geo, market=None) -> str:
+    """Rows of one price platform are fetched per group: Destatis table, Eurostat country,
+    CBS price type."""
+    if platform == "destatis":
+        return table or ""
+    if platform == "eurostat":
+        return geo or ""
+    if platform == "cbs":
+        return market or ""
+    return ""
 
 
 class Cancelled(Exception):
@@ -70,6 +88,7 @@ class Job:
             self.items.append({
                 "platform": r.platform, "platform_label": PLATFORM_LABELS[r.platform],
                 "code": r.code, "name": r.name, "id": r.id, "table": r.table,
+                "geo": r.geo, "group": _group_of(r.platform, r.table, r.geo, r.market),
                 "status": status, "status_label": STATUS_LABELS[status], "message": msg,
                 "detail": "",
             })
@@ -80,10 +99,10 @@ class Job:
             for p in PLATFORMS}
 
     # ----------------------------------------------------------------- helpers
-    def _items(self, platform, code=None, table=None):
+    def _items(self, platform, code=None, group=None):
         return [it for it in self.items if it["platform"] == platform
                 and (code is None or it["code"] == code)
-                and (table is None or (it["table"] or "") == table)]
+                and (group is None or it["group"] == group)]
 
     def log(self, msg: str, level: str = "info"):
         with self.lock:
@@ -92,9 +111,9 @@ class Job:
         if self.cancel_requested:
             raise Cancelled()
 
-    def set_status(self, platform, code, status, message=None, detail=None, table=None):
+    def set_status(self, platform, code, status, message=None, detail=None, group=None):
         with self.lock:
-            for it in self._items(platform, code, table):
+            for it in self._items(platform, code, group):
                 it["status"] = status
                 it["status_label"] = STATUS_LABELS[status]
                 if message is not None:
@@ -162,7 +181,7 @@ def run_job(job: Job):
         price_cols = {}
         if "comtrade" in job.settings["platforms"] and job._items("comtrade"):
             imports = _run_comtrade(job)
-        for p in ("destatis", "fred"):
+        for p in PRICE_PLATFORMS:
             if p in job.settings["platforms"] and job._items(p):
                 price_cols.update(_run_prices(job, p))
         _build_outputs(job, imports, price_cols)
@@ -249,8 +268,31 @@ def _run_comtrade(job: Job):
 
 
 # ---------------------------------------------------------------------- Prices
+def _default_group(job: Job, p: str) -> str:
+    if p == "destatis":
+        return job.settings.get("destatis_table") or fetch_prices.DESTATIS_DEFAULT_TABLE
+    if p == "eurostat":
+        return job.settings.get("eurostat_geo") or fetch_prices.EUROSTAT_DEFAULT_GEO
+    if p == "cbs":
+        return fetch_prices.CBS_DEFAULT_MARKET
+    return ""
+
+
+def _group_label(job: Job, p: str, group: str) -> str:
+    """Human readable source detail: Destatis table / Eurostat dataset + country."""
+    value = group or _default_group(job, p)
+    if p == "destatis":
+        return "tabel %s" % value
+    if p == "eurostat":
+        return "%s, %s" % (fetch_prices.EUROSTAT_DEFAULT_DATASET, value)
+    if p == "cbs":
+        return "%s, %s" % (fetch_prices.CBS_MARKETS.get(value, value).lower(),
+                           "/".join(fetch_prices.CBS_TABLES))
+    return ""
+
+
 def _run_prices(job: Job, p: str) -> dict:
-    """Returns {(platform, code, table): series}."""
+    """Fetch one price platform. Returns {(platform, code, group): series}."""
     items = job._items(p)
     out = {}
     if not credentials_present(p):
@@ -264,56 +306,59 @@ def _run_prices(job: Job, p: str) -> dict:
     job.set_platform(p, "running")
     start = job.settings["prices_start"]
     end = job.settings.get("prices_end") or None
-    if p == "destatis":
-        default_table = job.settings.get("destatis_table") or fetch_prices.DESTATIS_DEFAULT_TABLE
-        groups = {}
-        for it in items:
-            groups.setdefault(it["table"] or "", []).append(it["code"])
-    else:
-        groups = {"": [it["code"] for it in items]}
+    groups = {}
+    for it in items:
+        groups.setdefault(it["group"], []).append(it["code"])
 
     failures = 0
-    for table, codes in groups.items():
+    for group, codes in groups.items():
         codes = list(dict.fromkeys(codes))
-        label = PLATFORM_LABELS[p] + (" tabel %s" % (table or default_table)
-                                      if p == "destatis" else "")
+        detail = _group_label(job, p, group)
+        label = PLATFORM_LABELS[p] + (" " + detail if detail else "")
         job.log("%s: %d codes vanaf %s" % (label, len(codes), start))
 
-        def on_code(code, status, detail, _table=table):
+        def on_code(code, status, detail, _group=group):
             if status == "running":
-                job.set_status(p, code, "running", "", table=_table if p == "destatis" else None)
+                job.set_status(p, code, "running", "", group=_group)
             elif status == "ok":
                 s = detail.dropna()
                 msg = ("%d maanden, %s t/m %s" % (len(s), s.index.min().strftime("%Y-%m"),
                                                   s.index.max().strftime("%Y-%m"))
                        if len(s) else "geen waarden in de gevraagde periode")
-                job.set_status(p, code, "ok" if len(s) else "nodata", msg,
-                               table=_table if p == "destatis" else None)
+                if detail.attrs.get("note"):
+                    msg += "; " + detail.attrs["note"]
+                job.set_status(p, code, "ok" if len(s) else "nodata", msg, group=_group)
             else:
                 job.set_status(p, code, "failed", fetch_prices._short(detail, 500),
-                               detail=str(detail),
-                               table=_table if p == "destatis" else None)
+                               detail=str(detail), group=_group)
             if job.cancel_requested:
                 raise Cancelled()
 
+        value = group or _default_group(job, p)
         try:
             if p == "destatis":
-                df = fetch_prices.get_destatis_prices(
-                    codes, start, end, table=table or default_table,
-                    log=job.log, on_code=on_code)
+                df = fetch_prices.get_destatis_prices(codes, start, end, table=value,
+                                                      log=job.log, on_code=on_code)
+            elif p == "eurostat":
+                df = fetch_prices.get_eurostat_prices(codes, start, end, geo=value,
+                                                      log=job.log, on_code=on_code)
+            elif p == "cbs":
+                df = fetch_prices.get_cbs_prices(codes, start, end, market=value,
+                                                 log=job.log, on_code=on_code)
             else:
                 df = fetch_prices.get_fred_prices(codes, start, end, log=job.log,
                                                   on_code=on_code)
-        except (fetch_prices.DestatisError, fetch_prices.FredError, ConnectionError) as exc:
+        except (fetch_prices.DestatisError, fetch_prices.FredError, fetch_prices.EurostatError,
+                fetch_prices.CbsError, ConnectionError) as exc:
             failures += len(codes)
             for c in codes:
                 job.set_status(p, c, "failed", fetch_prices._short(exc, 500), detail=str(exc),
-                               table=table if p == "destatis" else None)
+                               group=group)
             job.log("%s gestopt: %s" % (label, exc), "error")
             continue
         failures += len(df.attrs.get("failed", {}))
         for c in df.columns:
-            out[(p, c, table)] = df[c]
+            out[(p, c, group)] = df[c]
 
     job.set_platform(p, "done" if not failures else ("error" if not out else "partial"),
                      "%d reeksen opgehaald, %d mislukt" % (len(out), failures))
@@ -346,19 +391,16 @@ def _build_outputs(job: Job, imports, price_cols: dict):
             job.log("Geen marktaandelen: geen enkele Comtrade-code gaf data.", "error")
 
     # prices
-    price_items = [it for it in job.items if it["platform"] in ("destatis", "fred")
+    price_items = [it for it in job.items if it["platform"] in PRICE_PLATFORMS
                    and it["platform"] in job.settings["platforms"]]
     if price_items:
         base = pd.Timestamp(job.settings["prices_start"]).to_period("M").to_timestamp()
         columns, sources = [], []
         for it in price_items:
-            key = (it["platform"], it["code"], (it["table"] or "") if it["platform"] == "destatis"
-                   else "")
-            series = price_cols.get(key)
+            series = price_cols.get((it["platform"], it["code"], it["group"]))
             src = {"id": it["id"], "materiaal": it["name"], "bron": it["platform_label"],
-                   "code": it["code"], "tabel": it["table"] or (
-                       (job.settings.get("destatis_table") or fetch_prices.DESTATIS_DEFAULT_TABLE)
-                       if it["platform"] == "destatis" else None),
+                   "code": it["code"],
+                   "tabel": _group_label(job, it["platform"], it["group"]) or None,
                    "status": it["status_label"], "melding": it["message"]}
             if series is not None and series.notna().any():
                 norm, base_used, note = outputs.normalise(series, base)
@@ -372,7 +414,7 @@ def _build_outputs(job: Job, imports, price_cols: dict):
                     src["melding"] = note
                     job.set_status(it["platform"], it["code"], it["status"],
                                    (it["message"] + "; " if it["message"] else "") + note,
-                                   table=it["table"] if it["platform"] == "destatis" else None)
+                                   group=it["group"])
                     job.log("%s %s: %s" % (it["platform_label"], it["code"], note), "warn")
                 columns.append({"id": it["id"], "name": it["name"], "series": series,
                                 "normalised": norm})

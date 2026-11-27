@@ -4,6 +4,8 @@ fetch_prices.py - download monthly price index series by code from
 
   1) Destatis GENESIS-Online (REST web service), e.g. GP19-237012
   2) FRED (St. Louis Fed API),                    e.g. PCU327991327991
+  3) Eurostat (dissemination API, no key),        e.g. C25 (NACE Rev. 2, dataset sts_inppd_m)
+  4) CBS StatLine (OData, no key),                e.g. 237 (ProdCom/CPA; consumption prices NL)
 
 and return them as ONE table: rows = months, columns = the codes you asked for.
 
@@ -72,6 +74,27 @@ DESTATIS_DEFAULT_TABLE = "61241-0004"
 # Measure that was selected in your chart link ("content": "PRE001$QMU").
 DESTATIS_DEFAULT_MEASURE = "PRE001"
 FRED_OBSERVATIONS_URL = "https://api.stlouisfed.org/fred/series/observations"
+# Eurostat dissemination API (JSON-stat 2.0, no key needed). Default dataset: producer prices
+# in industry, domestic market, monthly; codes are NACE Rev. 2 codes such as C25 or C237.
+EUROSTAT_DATA_URL = "https://ec.europa.eu/eurostat/api/dissemination/statistics/1.0/data/"
+EUROSTAT_DEFAULT_DATASET = "sts_inppd_m"
+EUROSTAT_DEFAULT_GEO = "EU27_2020"
+EUROSTAT_DEFAULT_UNIT = "I21"          # index 2021 = 100
+EUROSTAT_DEFAULT_S_ADJ = "NSA"         # not seasonally / calendar adjusted
+# CBS StatLine open data (OData v3, no key). Producer price tables per ProdCom/CPA code with
+# five price types; "verbruik" = consumption prices = import prices + domestic sales prices,
+# i.e. what users in the Netherlands pay, wherever the product was made. Newest table first:
+# 85770NED (2021=100, 2018-now) is chained to 83935NED (2015=100, 2012-2023) on the overlap.
+CBS_ODATA_URL = "https://opendata.cbs.nl/ODataApi/odata/"
+CBS_TABLES = ("85770NED", "83935NED")
+CBS_DEFAULT_MARKET = "verbruik"
+CBS_MARKETS = {               # name in the input file -> start of the CBS category title
+    "verbruik": "Verbruiksprijzen",
+    "invoer": "Invoerprijzen",
+    "binnenland": "Afzetprijzen binnenland",
+    "buitenland": "Afzetprijzen buitenland",
+    "afzet": "Totaal afzetprijzen",
+}
 
 _RETRY_STATUS = (429, 500, 502, 503, 504)
 # Tokens GENESIS uses instead of a number (same list as the pystatis client).
@@ -86,6 +109,14 @@ class DestatisError(RuntimeError):
 
 class FredError(RuntimeError):
     """Problem while requesting or parsing data from FRED."""
+
+
+class EurostatError(RuntimeError):
+    """Problem while requesting or parsing data from Eurostat."""
+
+
+class CbsError(RuntimeError):
+    """Problem while requesting or parsing data from CBS StatLine."""
 
 
 # --------------------------------------------------------------------------- #
@@ -757,6 +788,269 @@ def get_fred_prices(codes: CodeList, start="2015-01", end=None, *,
 
 
 # --------------------------------------------------------------------------- #
+# Eurostat
+# --------------------------------------------------------------------------- #
+def _eurostat_error_text(payload, resp) -> str:
+    error = payload.get("error") if isinstance(payload, dict) else None
+    if isinstance(error, list):
+        error = "; ".join(str(e.get("label") or e) if isinstance(e, dict) else str(e)
+                          for e in error)
+    elif isinstance(error, dict):
+        error = error.get("label") or error.get("message") or str(error)
+    return str(error or resp.text[:300])
+
+
+def _eurostat_series(code: str, dataset: str, geo: str, unit: str, s_adj: str,
+                     start_ts, end_ts) -> pd.Series:
+    """One Eurostat series as monthly pd.Series (code = NACE Rev. 2 code, e.g. C25)."""
+    params = {"format": "JSON", "lang": "EN", "nace_r2": code, "geo": geo, "unit": unit,
+              "s_adj": s_adj}
+    if start_ts is not None:
+        params["sinceTimePeriod"] = start_ts.strftime("%Y-%m")
+    if end_ts is not None:
+        params["untilTimePeriod"] = end_ts.strftime("%Y-%m")
+    where = "%s (dataset %s, geo %s, unit %s)" % (code, dataset, geo, unit)
+    logger.info("Eurostat %s", where)
+    resp = _request("GET", EUROSTAT_DATA_URL + dataset, params=params, timeout=(10, 120))
+    try:
+        payload = resp.json()
+    except ValueError:
+        raise EurostatError("%s: HTTP %d, answer is not JSON: %r"
+                            % (where, resp.status_code, resp.text[:200]))
+    if resp.status_code != 200 or (isinstance(payload, dict) and payload.get("error")):
+        raise EurostatError("%s: HTTP %d: %s" % (where, resp.status_code,
+                                                 _eurostat_error_text(payload, resp)))
+    ids, sizes = payload.get("id"), payload.get("size")
+    if not ids or not sizes or "time" not in ids:
+        raise EurostatError("%s: unexpected answer (keys: %s)" % (where, sorted(payload)))
+    empty = [d for d, s in zip(ids, sizes) if s == 0]
+    if empty:
+        # Eurostat answers HTTP 200 with an empty dimension for an unknown code or country.
+        raise EurostatError("%s: Eurostat does not know this value of %s. Check the NACE code "
+                            "and the country." % (where, " / ".join(empty)))
+    several = {d: s for d, s in zip(ids, sizes) if d != "time" and s != 1}
+    if several:
+        raise EurostatError("%s: the answer holds more than one series (%s). Narrow the request."
+                            % (where, ", ".join("%s: %d values" % kv for kv in several.items())))
+    values = payload.get("value") or {}
+    if not values:
+        # Eurostat answers HTTP 200 without values for an unknown code or country.
+        raise EurostatError("%s: Eurostat has no values for this code and country in the "
+                            "requested period. Check the NACE code and the country." % where)
+    pos = ids.index("time")
+    stride = 1
+    for size in sizes[pos + 1:]:
+        stride *= size
+    time_index = payload["dimension"]["time"]["category"]["index"]
+    if isinstance(time_index, list):
+        time_index = {label: i for i, label in enumerate(time_index)}
+    months, numbers = [], []
+    for label, i in time_index.items():
+        try:
+            month = pd.Period(label, freq="M").to_timestamp()
+        except (ValueError, TypeError):
+            raise EurostatError("%s: time period %r is not a month; only monthly datasets are "
+                                "supported." % (where, label))
+        flat = i * stride
+        value = values[flat] if isinstance(values, list) and flat < len(values) \
+            else (values.get(str(flat)) if isinstance(values, dict) else None)
+        months.append(month)
+        numbers.append(float(value) if value is not None else float("nan"))
+    series = pd.Series(numbers, index=pd.DatetimeIndex(months), name=code).sort_index()
+    if series.index.duplicated().any():
+        raise EurostatError("%s: more than one value per month." % where)
+    return series
+
+
+def get_eurostat_prices(codes: CodeList, start="2015-01", end=None, *,
+                        dataset: str = EUROSTAT_DEFAULT_DATASET,
+                        geo: str = EUROSTAT_DEFAULT_GEO, unit: str = EUROSTAT_DEFAULT_UNIT,
+                        s_adj: str = EUROSTAT_DEFAULT_S_ADJ, verbose: bool = True,
+                        on_error: str = "collect", log=None, on_code=None) -> pd.DataFrame:
+    """Monthly values for a list of NACE Rev. 2 codes (e.g. ['C25', 'C237']) from Eurostat.
+
+    Default: dataset sts_inppd_m (producer prices in industry, domestic market), EU27_2020,
+    index 2021=100, unadjusted. No API key needed. Returns index = first day of each month,
+    one column per code. verbose / on_error / log / on_code / df.attrs['completed'] /
+    df.attrs['failed']: see get_destatis_prices.
+    """
+    codes = _as_list(codes)
+    start_ts, end_ts = _month_start(start), _month_start(end)
+    columns, failed = _run_codes(
+        "Eurostat", codes,
+        lambda code: _eurostat_series(code, dataset, geo, unit, s_adj, start_ts, end_ts),
+        verbose=verbose, on_error=on_error, errors=(EurostatError, ConnectionError),
+        start_ts=start_ts, end_ts=end_ts, log=log, on_code=on_code)
+    df = _assemble(columns, start_ts, end_ts)
+    df.attrs["completed"] = [c for c in codes if c not in failed]
+    df.attrs["failed"] = failed
+    return df
+
+
+# --------------------------------------------------------------------------- #
+# CBS StatLine
+# --------------------------------------------------------------------------- #
+_CBS_STRUCTURE: dict = {}
+
+
+def _cbs_get(table: str, path: str) -> list:
+    resp = _request("GET", CBS_ODATA_URL + table + "/" + path, timeout=(10, 120))
+    if resp.status_code != 200:
+        raise CbsError("CBS table %s: HTTP %d for %s: %s"
+                       % (table, resp.status_code, path.split("?")[0], resp.text[:200]))
+    try:
+        return resp.json()["value"]
+    except (ValueError, KeyError):
+        raise CbsError("CBS table %s: answer for %s is not OData JSON: %r"
+                       % (table, path.split("?")[0], resp.text[:200]))
+
+
+def _cbs_structure(table: str) -> dict:
+    """Dimension names, product codes and price types of a CBS PPI table (cached).
+
+    The two PPI tables name their dimensions differently, so they are recognised by
+    content: the product dimension has titles like '2331 Keramische tegels ...', the
+    price-type dimension has 'Verbruiksprijzen' etc.
+    """
+    if table in _CBS_STRUCTURE:
+        return _CBS_STRUCTURE[table]
+    props = _cbs_get(table, "DataProperties?$format=json")
+    dims = [p["Key"] for p in props if p.get("Type") == "Dimension"]
+    topics = [p["Key"] for p in props if p.get("Type") == "Topic"]
+    time_dim = next((p["Key"] for p in props if p.get("Type") == "TimeDimension"), None)
+    if not dims or not topics or not time_dim:
+        raise CbsError("CBS table %s has an unexpected layout (properties: %s)"
+                       % (table, [p.get("Key") for p in props]))
+    product_dim = market_dim = None
+    products, markets = {}, {}
+    for dim in dims:
+        cats = _cbs_get(table, dim + "?$format=json")
+        titles = [str(c.get("Title", "")) for c in cats]
+        if any(t.startswith(tuple(CBS_MARKETS.values())) for t in titles):
+            market_dim = dim
+            for name, prefix in CBS_MARKETS.items():
+                key = next((c["Key"] for c in cats if str(c["Title"]).startswith(prefix)), None)
+                if key:
+                    markets[name] = key
+        else:
+            product_dim = dim
+            for c in cats:
+                code = str(c.get("Title", "")).split(" ", 1)[0]
+                products.setdefault(code, (c["Key"], str(c["Title"]).strip()))
+    if not product_dim or not market_dim:
+        raise CbsError("CBS table %s: cannot find the product and price-type dimensions (%s)"
+                       % (table, dims))
+    structure = {"product_dim": product_dim, "market_dim": market_dim, "time_dim": time_dim,
+                 "topic": topics[0], "products": products, "markets": markets}
+    _CBS_STRUCTURE[table] = structure
+    return structure
+
+
+def _cbs_table_series(table: str, code: str, market: str) -> Optional[pd.Series]:
+    """Monthly index of one code in one CBS table; None if the table lacks the code."""
+    st = _cbs_structure(table)
+    if code not in st["products"]:
+        return None
+    if market not in st["markets"]:
+        raise CbsError("CBS table %s has no price type %r (available: %s)"
+                       % (table, market, ", ".join(st["markets"])))
+    product_key, title = st["products"][code]
+    flt = "%s eq '%s' and %s eq '%s' and substringof('MM', %s)" % (
+        st["product_dim"], product_key, st["market_dim"], st["markets"][market], st["time_dim"])
+    rows = _cbs_get(table, "TypedDataSet?$format=json&$select=%s,%s&$filter=%s" % (
+        st["time_dim"], st["topic"], requests.utils.quote(flt)))
+    months, values = [], []
+    for row in rows:
+        match = re.fullmatch(r"(\d{4})MM(\d{2})", str(row.get(st["time_dim"], "")).strip())
+        if match and row.get(st["topic"]) is not None:
+            months.append(pd.Timestamp(int(match.group(1)), int(match.group(2)), 1))
+            values.append(float(row[st["topic"]]))
+    series = pd.Series(values, index=pd.DatetimeIndex(months), name=code, dtype=float).sort_index()
+    series.attrs["title"] = title
+    return series
+
+
+def _chain(new: pd.Series, old: pd.Series, months: int = 12):
+    """Extend `new` backwards with `old`, rescaled on their first `months` common months.
+
+    Returns (series, note) or (new, None) if there is nothing to add or no overlap.
+    """
+    new, old = new.dropna(), old.dropna()
+    if new.empty:
+        return old, None
+    earlier = old[old.index < new.index.min()]
+    common = new.index.intersection(old.index)[:months]
+    if earlier.empty or len(common) == 0:
+        return new, None
+    factor = new.loc[common].mean() / old.loc[common].mean()
+    out = pd.concat([earlier * factor, new]).sort_index()
+    note = ("%s t/m %s aangevuld uit oudere CBS-tabel (gekoppeld op %s t/m %s)"
+            % (earlier.index.min().strftime("%Y-%m"), earlier.index.max().strftime("%Y-%m"),
+               common.min().strftime("%Y-%m"), common.max().strftime("%Y-%m")))
+    return out, note
+
+
+def _cbs_series(code: str, market: str, tables, start_ts, end_ts) -> pd.Series:
+    """One CBS series, newest table first, older tables chained in front of it."""
+    code = str(code).strip()
+    found, notes, combined, title = [], [], None, None
+    for table in tables:
+        series = _cbs_table_series(table, code, market)
+        if series is None:
+            continue
+        found.append(table)
+        title = title or series.attrs.get("title")
+        if series.dropna().empty:
+            continue
+        if combined is None:
+            combined = series
+        elif start_ts is None or combined.dropna().index.min() > start_ts:
+            older = series if start_ts is None else series[series.index >= start_ts]
+            combined, note = _chain(combined, older)
+            if note:
+                notes.append(note)
+    if not found:
+        raise CbsError("Code %s staat niet in CBS-tabel %s. Gebruik een ProdCom/CPA-code zoals "
+                       "CBS die schrijft, bv. 237 of 2331." % (code, " / ".join(tables)))
+    if combined is None or combined.dropna().empty:
+        raise CbsError("CBS heeft geen %s voor %s (%s) in tabel %s."
+                       % (CBS_MARKETS.get(market, market).lower(), code, title, " / ".join(found)))
+    combined = combined.copy()
+    combined.name = code
+    combined.attrs["title"] = title
+    combined.attrs["note"] = "; ".join(notes)
+    return combined
+
+
+def get_cbs_prices(codes: CodeList, start="2015-01", end=None, *,
+                   market: str = CBS_DEFAULT_MARKET, tables=CBS_TABLES,
+                   verbose: bool = True, on_error: str = "collect", log=None,
+                   on_code=None) -> pd.DataFrame:
+    """Monthly CBS producer price indices for ProdCom/CPA codes (e.g. ['237', '2331']).
+
+    market: 'verbruik' (default: consumption prices = imports + domestic sales, the price
+    level on the Dutch market), 'invoer', 'binnenland', 'buitenland' or 'afzet'.
+    The newest table comes first; when it starts after `start`, older tables are chained
+    in front of it on their overlapping months (series.attrs['note'] says which months).
+    No key needed. verbose / on_error / log / on_code: see get_destatis_prices.
+    """
+    codes = _as_list(codes)
+    if market not in CBS_MARKETS:
+        raise CbsError("Onbekende CBS-prijssoort %r; kies uit %s"
+                       % (market, ", ".join(CBS_MARKETS)))
+    start_ts, end_ts = _month_start(start), _month_start(end)
+    columns, failed = _run_codes(
+        "CBS", codes, lambda code: _cbs_series(code, market, tables, start_ts, end_ts),
+        verbose=verbose, on_error=on_error, errors=(CbsError, ConnectionError),
+        start_ts=start_ts, end_ts=end_ts, log=log, on_code=on_code)
+    df = _assemble(columns, start_ts, end_ts)
+    df.attrs["completed"] = [c for c in codes if c not in failed]
+    df.attrs["failed"] = failed
+    df.attrs["notes"] = {s.name: s.attrs.get("note", "") for s in columns}
+    return df
+
+
+# --------------------------------------------------------------------------- #
 # combined
 # --------------------------------------------------------------------------- #
 def _assemble(columns: list, start_ts, end_ts) -> pd.DataFrame:
@@ -773,9 +1067,11 @@ def _assemble(columns: list, start_ts, end_ts) -> pd.DataFrame:
 
 def get_prices(destatis_codes: CodeList = (), fred_codes: CodeList = (), start="2015-01",
                end=None, destatis_kwargs: Optional[dict] = None,
-               fred_kwargs: Optional[dict] = None, *, verbose: bool = True,
+               fred_kwargs: Optional[dict] = None, *, eurostat_codes: CodeList = (),
+               eurostat_kwargs: Optional[dict] = None, cbs_codes: CodeList = (),
+               cbs_kwargs: Optional[dict] = None, verbose: bool = True,
                on_error: str = "collect") -> pd.DataFrame:
-    """Fetch Destatis and FRED codes in one call; one column per code, one row per month.
+    """Fetch Destatis, FRED, Eurostat and CBS codes in one call; one column per code, one row per month.
 
     df.attrs['completed'] lists the codes that were fetched, df.attrs['failed'] maps the
     failed codes to their error message (see get_destatis_prices for verbose / on_error).
@@ -788,8 +1084,14 @@ def get_prices(destatis_codes: CodeList = (), fred_codes: CodeList = (), start="
     if _as_list(fred_codes):
         frames.append(get_fred_prices(fred_codes, start, end,
                                       **dict(common, **(fred_kwargs or {}))))
+    if _as_list(eurostat_codes):
+        frames.append(get_eurostat_prices(eurostat_codes, start, end,
+                                          **dict(common, **(eurostat_kwargs or {}))))
+    if _as_list(cbs_codes):
+        frames.append(get_cbs_prices(cbs_codes, start, end,
+                                     **dict(common, **(cbs_kwargs or {}))))
     if not frames:
-        raise ValueError("Give at least one Destatis or FRED code.")
+        raise ValueError("Give at least one Destatis, FRED, Eurostat or CBS code.")
     out = pd.concat(frames, axis=1).sort_index()
     out.index.name = "month"
     failed, completed = {}, []
@@ -806,11 +1108,19 @@ def get_prices(destatis_codes: CodeList = (), fred_codes: CodeList = (), start="
 # --------------------------------------------------------------------------- #
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description="Download monthly price index series from "
-                                            "Destatis GENESIS-Online and FRED by code.")
+                                            "Destatis GENESIS-Online, FRED, Eurostat and CBS by code.")
     p.add_argument("--destatis", nargs="*", default=[], metavar="CODE",
                    help="GP 2019 codes, e.g. GP19-237012")
     p.add_argument("--fred", nargs="*", default=[], metavar="ID",
                    help="FRED series ids, e.g. PCU327991327991")
+    p.add_argument("--eurostat", nargs="*", default=[], metavar="NACE",
+                   help="NACE Rev. 2 codes for Eurostat, e.g. C25 C237")
+    p.add_argument("--geo", default=EUROSTAT_DEFAULT_GEO,
+                   help="Eurostat country, default EU27_2020 (e.g. NL, DE)")
+    p.add_argument("--cbs", nargs="*", default=[], metavar="CODE",
+                   help="CBS ProdCom/CPA codes, e.g. 237 2331 (consumption prices in NL)")
+    p.add_argument("--cbs-market", default=CBS_DEFAULT_MARKET, choices=sorted(CBS_MARKETS),
+                   help="CBS price type, default verbruik (imports + domestic sales)")
     p.add_argument("--start", default="2015-01", help="first month, default 2015-01")
     p.add_argument("--end", default=None, help="last month (default: all available)")
     p.add_argument("--table", default=DESTATIS_DEFAULT_TABLE, help="GENESIS table code")
@@ -852,9 +1162,12 @@ def main(argv=None) -> int:
                              "classifying_variable": args.classifying_variable,
                              "language": args.language, "raw_dir": args.save_raw,
                              "allow_job": args.allow_job},
+            eurostat_codes=args.eurostat, eurostat_kwargs={"geo": args.geo},
+            cbs_codes=args.cbs, cbs_kwargs={"market": args.cbs_market},
             verbose=not args.quiet,
         )
-    except (DestatisError, FredError, ValueError, ConnectionError) as exc:
+    except (DestatisError, FredError, EurostatError, CbsError, ValueError,
+            ConnectionError) as exc:
         print("ERROR: %s" % exc, file=sys.stderr)
         return 1
     print(df.to_string(float_format=lambda v: "%.2f" % v))

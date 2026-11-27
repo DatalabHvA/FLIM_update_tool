@@ -80,7 +80,10 @@ def prices_xlsx(columns: list, base_month: pd.Timestamp, sources: list) -> bytes
                "Laatste maand", "Aantal maanden", "Basismaand", "Melding"]
     src.append(headers)
     for s in sources:   # keys: header in lower case, spaces -> "_"
-        src.append([s.get(h.lower().replace(" ", "_")) for h in headers])
+        row = [s.get(h.lower().replace(" ", "_")) for h in headers]
+        if row[0] and str(row[0]).isdigit():
+            row[0] = int(row[0])            # same number type as row 1 of 'Datasheet'
+        src.append(row)
     _style_header(src, 1)
     src.append([])
     src.append(["Genormaliseerd op %s (= 1)." % base_month.strftime("%Y-%m")])

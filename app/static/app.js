@@ -2,7 +2,7 @@
 const $ = (s) => document.querySelector(s);
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-const LABEL = { comtrade: "UN Comtrade", destatis: "Destatis", fred: "FRED" };
+const LABEL = { comtrade: "UN Comtrade", cbs: "CBS", destatis: "Destatis", fred: "FRED", eurostat: "Eurostat" };
 const STATE_LABEL = {
   queued: "in de wachtrij", running: "bezig", done: "klaar", error: "gestopt", partial: "deels gelukt",
   pending: "wacht", skipped: "niet geselecteerd", empty: "geen codes",
@@ -25,9 +25,11 @@ async function api(path, opts = {}) {
 // ---------------------------------------------------------------- 1. config
 async function loadConfig() {
   const cfg = await api("/api/config");
-  $("#keys").innerHTML = Object.values(cfg.credentials).map((c) =>
-    `<span class="key ${c.present ? "yes" : "no"}" title="${esc(c.present ? "ingesteld" : "ontbreekt: " + c.hint)}">
-       ${c.present ? "✓" : "✗"} ${esc(c.label)} ${c.present ? "sleutel aanwezig" : "sleutel ontbreekt"}</span>`).join("");
+  $("#keys").innerHTML = Object.values(cfg.credentials).map((c) => {
+    const text = !c.needs_key ? "geen sleutel nodig" : c.present ? "sleutel aanwezig" : "sleutel ontbreekt";
+    return `<span class="key ${c.present ? "yes" : "no"}" title="${esc(c.present ? "in orde" : "ontbreekt: " + c.hint)}">
+       ${c.present ? "✓" : "✗"} ${esc(c.label)} ${text}</span>`;
+  }).join("");
   for (const [k, v] of Object.entries(cfg.defaults)) { const el = $("#" + k); if (el) el.value = v; }
   const jobs = await api("/api/jobs");
   const active = jobs.find((j) => j.state === "running" || j.state === "queued");
@@ -53,7 +55,7 @@ async function upload(file) {
   }
   drop.classList.add("loaded");
   const c = input.counts;
-  $("#drop-text").textContent = `${file.name}: ${c.comtrade} Comtrade, ${c.destatis} Destatis, ${c.fred} FRED codes (klik om een ander bestand te kiezen)`;
+  $("#drop-text").textContent = `${file.name}: ${c.comtrade} Comtrade, ${c.cbs} CBS, ${c.destatis} Destatis, ${c.fred} FRED, ${c.eurostat} Eurostat codes (klik om een ander bestand te kiezen)`;
   renderCheck();
 }
 
@@ -78,9 +80,9 @@ function renderCheck() {
   const rows = input.rows.filter((r) => r.platform === previewTab);
   const price = previewTab !== "comtrade";
   $("#preview").innerHTML = `<tr><th>Rij</th>${price ? "<th>ID</th>" : ""}<th>Materiaal</th><th>Code</th>
-      ${previewTab === "destatis" ? "<th>Tabel</th>" : ""}${previewTab === "comtrade" ? "<th>Omschrijving</th>" : ""}</tr>` +
+      ${previewTab === "destatis" ? "<th>Tabel</th>" : ""}${previewTab === "eurostat" ? "<th>Land</th>" : ""}${previewTab === "cbs" ? "<th>Prijs</th>" : ""}${previewTab === "comtrade" ? "<th>Omschrijving</th>" : ""}</tr>` +
     rows.map((r) => `<tr><td>${r.sheet_row}</td>${price ? `<td>${esc(r.id)}</td>` : ""}<td>${esc(r.name)}</td>
-      <td><code>${esc(r.code)}</code></td>${previewTab === "destatis" ? `<td>${esc(r.table || "standaard")}</td>` : ""}
+      <td><code>${esc(r.code)}</code></td>${previewTab === "destatis" ? `<td>${esc(r.table || "standaard")}</td>` : ""}${previewTab === "eurostat" ? `<td>${esc(r.geo || "standaard")}</td>` : ""}${previewTab === "cbs" ? `<td>${esc(r.market || "verbruik")}</td>` : ""}
       ${previewTab === "comtrade" ? `<td class="msgcell">${esc(r.description)}</td>` : ""}</tr>`).join("");
 
   document.querySelectorAll("input[name=platform]").forEach((cb) => {
@@ -95,7 +97,7 @@ function renderCheck() {
 $("#start").addEventListener("click", async () => {
   const platforms = [...document.querySelectorAll("input[name=platform]:checked")].map((c) => c.value);
   const body = { input_id: input.input_id, platforms };
-  ["comtrade_period", "comtrade_reporter", "prices_start", "prices_end", "destatis_table"]
+  ["comtrade_period", "comtrade_reporter", "prices_start", "prices_end", "destatis_table", "eurostat_geo"]
     .forEach((k) => (body[k] = $("#" + k).value));
   $("#start").disabled = true; $("#start-msg").textContent = "";
   try {
@@ -133,7 +135,7 @@ function renderProgress(s) {
   $("#elapsed").textContent = s.elapsed ? fmtTime(s.elapsed) : "";
   $("#cancel").classList.toggle("hidden", !(s.state === "running" || s.state === "queued") || s.cancel_requested);
 
-  $("#platforms").innerHTML = Object.entries(s.platforms).filter(([, p]) => p.total).map(([k, p]) => {
+  $("#platforms").innerHTML = Object.entries(s.platforms).filter(([, p]) => p.total && p.state !== "skipped").map(([k, p]) => {
     const c = p.counts, active = p.total - c.skipped;
     const pct = (n) => (active ? (100 * n) / active : 0);
     return `<div class="plat">
@@ -146,12 +148,15 @@ function renderProgress(s) {
   }).join("");
 
   const onlyProblems = document.querySelector("input[name=filter]:checked").value === "problems";
-  const items = s.items.filter((it) => !onlyProblems || ["failed", "nodata"].includes(it.status));
+  const skipped = s.items.filter((it) => it.status === "skipped" && it.message === "platform niet geselecteerd").length;
+  const items = s.items.filter((it) => !(it.status === "skipped" && it.message === "platform niet geselecteerd"))
+    .filter((it) => !onlyProblems || ["failed", "nodata"].includes(it.status));
   $("#items").innerHTML = `<tr><th>Platform</th><th>Code</th><th>Materiaal</th><th>Status</th><th>Melding</th></tr>` +
     (items.length ? items.map((it) => `<tr><td>${esc(it.platform_label)}</td><td><code>${esc(it.code)}</code></td>
       <td>${esc(it.name)}</td><td><span class="pill st-${it.status}">${esc(it.status_label)}</span></td>
       <td class="msgcell" title="${esc(it.detail)}">${esc(it.message)}</td></tr>`).join("")
-      : `<tr><td colspan="5" class="muted">Geen problemen.</td></tr>`);
+      : `<tr><td colspan="5" class="muted">Geen problemen.</td></tr>`) +
+    (skipped ? `<tr><td colspan="5" class="muted">${skipped} code(s) van niet-geselecteerde platforms niet getoond.</td></tr>` : "");
 
   if (s.log.length) {
     $("#log").insertAdjacentHTML("beforeend", s.log.map((l) =>

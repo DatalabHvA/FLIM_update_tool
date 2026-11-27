@@ -7,9 +7,11 @@ also works). Column headers are matched loosely, see COLUMN_ALIASES.
     Comtrade:  Materiaal | Code | Omschrijving (optional)
     Destatis:  ID (optional) | Materiaal | Code | Tabel (optional)
     FRED:      ID (optional) | Materiaal | Code
+    Eurostat:  ID (optional) | Materiaal | Code (NACE, e.g. C25) | Land (optional)
+    CBS:       ID (optional) | Materiaal | Code (ProdCom/CPA, e.g. 237) | Prijs (optional)
 
-Comtrade rows feed material_market_share.xlsx, Destatis + FRED rows feed
-prijzen.xlsx (ID = FLIM material id, written in row 1 of the price sheet).
+Comtrade rows feed material_market_share.xlsx, the price sheets (CBS, Destatis,
+FRED, Eurostat) feed prijzen.xlsx (ID = FLIM material id, written in row 1 of the price sheet).
 """
 from __future__ import annotations
 
@@ -20,10 +22,14 @@ from typing import Optional
 
 import openpyxl
 
-PLATFORMS = ("comtrade", "destatis", "fred")
+PLATFORMS = ("comtrade", "cbs", "destatis", "fred", "eurostat")
+PRICE_PLATFORMS = ("cbs", "destatis", "fred", "eurostat")
+# CBS price types (column "Prijs"); "verbruik" = imports + domestic sales = Dutch market price
+CBS_MARKETS = ("verbruik", "invoer", "binnenland", "buitenland", "afzet")
 # GP 2019 code levels in Destatis table 61241-0004 (digits after "GP19", dashes ignored)
 DESTATIS_DIGIT_LEVELS = (2, 3, 4, 5, 6, 9)
-PLATFORM_LABELS = {"comtrade": "UN Comtrade", "destatis": "Destatis", "fred": "FRED"}
+PLATFORM_LABELS = {"comtrade": "UN Comtrade", "cbs": "CBS", "destatis": "Destatis",
+                   "fred": "FRED", "eurostat": "Eurostat"}
 
 COLUMN_ALIASES = {
     "name": ("materiaal", "materiaal2", "naam", "name", "material", "materiaalnaam"),
@@ -31,6 +37,8 @@ COLUMN_ALIASES = {
              "reeks", "gp-code", "gp code"),
     "id": ("id", "flim id", "flim-id", "materiaal id"),
     "table": ("tabel", "table", "destatis tabel"),
+    "geo": ("land", "geo", "country", "regio"),
+    "market": ("prijs", "prijssoort", "markt", "price type"),
     "description": ("omschrijving", "naam code", "description", "beschrijving"),
 }
 
@@ -42,6 +50,8 @@ class Row:
     name: str
     id: Optional[str] = None
     table: Optional[str] = None
+    geo: Optional[str] = None
+    market: Optional[str] = None
     description: Optional[str] = None
     sheet_row: int = 0
 
@@ -115,11 +125,36 @@ def _normalise_code(platform, raw, cell_value, where, warnings):
             warnings.append("%s: Destatis-code %s heeft %d cijfers; Destatis kent codes van %s "
                             "cijfers." % (where, code, digits,
                                           ", ".join(map(str, DESTATIS_DIGIT_LEVELS))))
+    elif platform == "cbs":
+        if not re.fullmatch(r"\d{2,8}", code):
+            warnings.append("%s: CBS-code %r lijkt niet op een ProdCom/CPA-code (2-8 cijfers, "
+                            "bv. 237 of 2331)." % (where, raw))
+        elif isinstance(cell_value, (int, float)) and len(code) in (3, 7):
+            warnings.append("%s: CBS-code %s stond als getal in Excel; controleer of er geen "
+                            "voorloopnul (bv. 0811) is weggevallen." % (where, code))
+    elif platform == "eurostat":
+        code = code.upper()
+        if not re.fullmatch(r"[A-Z][A-Z0-9_-]*", code):
+            warnings.append("%s: Eurostat-code %r lijkt niet op een NACE-code (bv. C25)."
+                            % (where, raw))
     elif platform == "fred":
         code = code.upper()
         if not re.fullmatch(r"[A-Z0-9_]+", code):
             warnings.append("%s: FRED-reeks %r bevat onverwachte tekens." % (where, raw))
     return code
+
+
+def _market(platform, value, where, warnings):
+    """CBS price type from column 'Prijs' (None = default 'verbruik')."""
+    if platform != "cbs" or not value:
+        return None
+    low = value.lower().replace("prijzen", "").replace("prijs", "").strip()
+    for name in CBS_MARKETS:
+        if low.startswith(name):
+            return name
+    warnings.append("%s: prijssoort %r onbekend; 'verbruik' gebruikt (kies uit %s)."
+                    % (where, value, ", ".join(CBS_MARKETS)))
+    return None
 
 
 def parse_workbook(data: bytes) -> ParsedInput:
@@ -172,6 +207,8 @@ def parse_workbook(data: bytes) -> ParsedInput:
                 platform=platform, code=code, name=name,
                 id=clean(get(row, "id")) or None,
                 table=clean(get(row, "table")) or None,
+                geo=clean(get(row, "geo")).upper() or None,
+                market=_market(platform, clean(get(row, "market")), where, out.warnings),
                 description=clean(get(row, "description")) or None,
                 sheet_row=n))
     sheet_names = wb.sheetnames
@@ -179,7 +216,7 @@ def parse_workbook(data: bytes) -> ParsedInput:
 
     if not recognised:
         out.errors.append(
-            "Geen bladen gevonden met de naam Comtrade, Destatis of FRED. Gebruik het "
+            "Geen bladen gevonden met de naam Comtrade, CBS, Destatis, FRED of Eurostat. Gebruik het "
             "voorbeeldbestand of hernoem de bladen (bladen in dit bestand: %s)."
             % ", ".join(sheet_names))
     elif not out.rows and not out.errors:
@@ -189,14 +226,15 @@ def parse_workbook(data: bytes) -> ParsedInput:
 
 
 def _check_duplicates(out: ParsedInput):
-    seen = {}
+    users = {}
     for r in out.rows:
-        key = (r.platform, r.code, r.table or "")
-        if key in seen:
+        key = (r.platform, r.code, r.table or "", r.geo or "", r.market or "")
+        users.setdefault(key, []).append(r.name)
+    for (platform, code, *_), names in users.items():
+        if len(names) > 1:
             out.warnings.append(
-                "%s: code %s staat twee keer in de lijst ('%s' en '%s')."
-                % (PLATFORM_LABELS[r.platform], r.code, seen[key], r.name))
-        seen[key] = r.name
+                "%s: code %s wordt door %d materialen gebruikt (%s); zij krijgen dezelfde reeks."
+                % (PLATFORM_LABELS[platform], code, len(names), ", ".join(names)))
 
     names = {}
     for r in out.by_platform("comtrade"):
@@ -209,14 +247,14 @@ def _check_duplicates(out: ParsedInput):
                 "dan een andere naam." % (name, ", ".join(codes)))
 
     ids = {}
-    for r in out.by_platform("destatis") + out.by_platform("fred"):
+    for r in [r for r in out.rows if r.platform in PRICE_PLATFORMS]:
         if r.id:
             ids.setdefault(r.id, []).append(r.name)
     for id_, used in ids.items():
         if len(used) > 1:
             out.warnings.append("Prijzen: ID %s wordt gebruikt door meerdere reeksen (%s)."
                                 % (id_, ", ".join(used)))
-    missing_id = [r.name for r in out.by_platform("destatis") + out.by_platform("fred")
+    missing_id = [r.name for r in [r for r in out.rows if r.platform in PRICE_PLATFORMS]
                   if not r.id]
     if missing_id:
         out.warnings.append("Prijzen: %d reeks(en) zonder FLIM-ID (%s). Rij 1 van "

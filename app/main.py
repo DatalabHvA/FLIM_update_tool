@@ -25,7 +25,8 @@ from pydantic import BaseModel, Field
 import fetch_prices
 
 from .inputs import PLATFORM_LABELS, PLATFORMS, parse_workbook
-from .pipeline import Job, JobRegistry, credential_hint, credentials_present
+from .pipeline import (Job, JobRegistry, credential_hint, credentials_present,
+                       needs_credentials)
 
 ROOT = Path(__file__).resolve().parent.parent
 STATIC = Path(__file__).resolve().parent / "static"
@@ -82,6 +83,7 @@ def config():
     today = dt.date.today()
     return {
         "credentials": {p: {"label": PLATFORM_LABELS[p], "present": credentials_present(p),
+                            "needs_key": needs_credentials(p),
                             "hint": credential_hint(p)} for p in PLATFORMS},
         "auth_enabled": bool(os.environ.get("APP_PASSWORD")),
         "defaults": {
@@ -90,6 +92,7 @@ def config():
             "prices_start": "2015-01",
             "prices_end": "",
             "destatis_table": fetch_prices.DESTATIS_DEFAULT_TABLE,
+            "eurostat_geo": fetch_prices.EUROSTAT_DEFAULT_GEO,
         },
     }
 
@@ -125,6 +128,7 @@ class JobRequest(BaseModel):
     prices_start: str = "2015-01"
     prices_end: str = ""
     destatis_table: str = ""
+    eurostat_geo: str = ""
 
 
 def _check_settings(req: JobRequest):
@@ -138,6 +142,9 @@ def _check_settings(req: JobRequest):
             problems.append("%s moet de vorm JJJJ-MM hebben." % label)
     if not req.prices_start.strip():
         problems.append("Startmaand is verplicht (ook de basismaand voor normalisatie).")
+    if req.eurostat_geo.strip() and not re.fullmatch(r"[A-Za-z0-9_]{2,12}",
+                                                     req.eurostat_geo.strip()):
+        problems.append("Eurostat-land moet een code zijn zoals EU27_2020, NL of DE.")
     bad = [p for p in req.platforms if p not in PLATFORMS]
     if bad or not req.platforms:
         problems.append("Kies minstens één platform.")
@@ -168,6 +175,7 @@ def start_job(req: JobRequest):
         "prices_start": req.prices_start.strip(),
         "prices_end": req.prices_end.strip(),
         "destatis_table": req.destatis_table.strip(),
+        "eurostat_geo": req.eurostat_geo.strip().upper(),
     }
     job = Job(parsed, settings)
     registry.start(job)

@@ -1,19 +1,19 @@
 # FLIM_update_tool
 
 A web tool for updating the content of the FLIM tool. It fetches import figures (UN Comtrade) and
-price indices (Destatis GENESIS-Online, FRED). From them it builds the two input files of the FLIM tool:
+price indices (CBS, Destatis GENESIS-Online, FRED, Eurostat). From them it builds the two input files of the FLIM tool:
 
 | Output | Source | Layout |
 |---|---|---|
 | `material_market_share.xlsx` | Comtrade (NL imports per partner country) | `Materiaal2`, `partnerISO`, `market_share` (sums to 1 per material) |
-| `prijzen.xlsx` | Destatis + FRED (monthly indices) | Sheet `Datasheet`: row 1 = FLIM ID, row 2 = material, column A = month, values relative to the start month (= 1). Also has the sheets `Ruwe indices` and `Bronnen`. |
+| `prijzen.xlsx` | CBS + Destatis + FRED + Eurostat (monthly indices) | Sheet `Datasheet`: row 1 = FLIM ID, row 2 = material, column A = month, values relative to the start month (= 1). Also has the sheets `Ruwe indices` and `Bronnen`. |
 | `rapport.xlsx` | — | Status per code, the settings used and the full log |
 
 ## How it works
 
-1. **Input**: one Excel file with a sheet per platform: `Comtrade`, `Destatis` and `FRED`.
-   Each sheet has the columns `Materiaal` and `Code`. Destatis and FRED also have `ID` (the FLIM material ID), and
-   Destatis optionally has `Tabel`. See [voorbeeld_invoer.xlsx](voorbeeld_invoer.xlsx), which you can also download in the tool.
+1. **Input**: one Excel file with a sheet per platform: `Comtrade`, `CBS`, `Destatis`, `FRED` and `Eurostat`.
+   Each sheet has the columns `Materiaal` and `Code`. The price sheets also have `ID` (the FLIM material ID; every
+   material-source combination has its own ID). CBS optionally has `Prijs`, Destatis optionally has `Tabel`, and Eurostat optionally has `Land`. See [voorbeeld_invoer.xlsx](voorbeeld_invoer.xlsx), which you can also download in the tool.
 2. **Check**: the tool reads the file and shows errors and warnings: missing columns, codes that look wrong,
    lost leading zeros, duplicate names or IDs.
 3. **Settings**: Comtrade year, start and end month for prices, and which platforms to run.
@@ -34,6 +34,32 @@ variable for that level. For example, `GP19-0811` gives 4 digits, `GP19-237011` 
 The variable names are read from the table's metadata on every run. If a code matches no variable,
 only that code fails, and its message lists the variables the table has.
 A different table per code can be set in the `Tabel` column, for example the older 61241-0006.
+
+## CBS: market prices in the Netherlands (recommended)
+
+For "what buyers in the Netherlands pay, wherever the product was made", CBS **verbruiksprijzen** (consumption prices) are the
+best available measure. They combine the import prices paid by Dutch industry and trade with the domestic sales prices of
+Dutch producers. They come from table **85770NED**, *Producentenprijzen (PPI); afzet-, invoer-, verbruiksprijzen*, which
+starts in 2018. The tool automatically links that table to its predecessor **83935NED** (2012–2023) on their first
+12 common months, so the series start in 2015. The **Bronnen** sheet shows which months came from the old table.
+
+- `Code`: the ProdCom/CPA code as CBS writes it, for example `237` (worked natural stone), `2331` (ceramic tiles),
+  `2351` (cement), `2361` (concrete products) or `2311` (flat glass).
+- `Prijs` (optional): `verbruik` (the default), `invoer`, `binnenland`, `buitenland` or `afzet`.
+- No API key is needed.
+
+Destatis (Germany), FRED (US) and Eurostat (EU or another country) measure producer prices elsewhere. They are useful for
+comparison or as a backup.
+
+## Eurostat
+
+Eurostat series come from dataset **sts_inppd_m**, producer prices in industry on the domestic market, monthly.
+They are unadjusted, with index 2021 = 100. The code is a NACE Rev. 2 code such as `C25` or `C237`.
+The country comes from the `Land` column, for example `NL`, `DE` or `EU27_2020`; when it is empty, the default from the
+settings is used, which is `EU27_2020`. No API key is needed.
+Not every code has figures for every country. For example, `C2311` has no EU27 figures, and the EU27
+figures for `C2351` stop after 2023-11. Such a code then shows as *mislukt* with the reason, or the
+**Bronnen** sheet shows the period it covers.
 
 ## Environment variables
 

@@ -116,7 +116,7 @@ def test_full_run(client):
         destatis=[(5, "Hout index", "GP19-1"), (6, "Kapot", "GP19-BAD")],
         fred=[(24, "Textiel", "PCU1"), (25, "Laat", "LATE")])
     up = client.post("/api/inputs", files={"file": ("in.xlsx", data)}).json()
-    assert up["counts"] == {"comtrade": 4, "destatis": 2, "fred": 2}
+    assert up["counts"] == {"comtrade": 4, "cbs": 0, "destatis": 2, "fred": 2, "eurostat": 0}
     r = client.post("/api/jobs", json={"input_id": up["input_id"], "prices_start": "2015-01"})
     assert r.status_code == 200, r.text
     snap = wait(client, r.json()["job_id"])
@@ -238,3 +238,117 @@ def test_gp_digits():
     assert fetch_prices.gp_digits("gp19-233110002") == 9
     assert fetch_prices.gp_digits("GP19-23--31") == 4
     assert fetch_prices.gp_digits("PCU1") is None
+
+
+class _EurostatResp:
+    def __init__(self, payload, status=200):
+        self.payload, self.status_code, self.text = payload, status, str(payload)
+
+    def json(self):
+        return self.payload
+
+
+def _jsonstat(code, geo, values, months=("2015-01", "2015-02", "2015-03")):
+    """Minimal JSON-stat answer: one series, time as the last dimension."""
+    ids = ["freq", "nace_r2", "unit", "geo", "time"]
+    sizes = [1, 1 if code else 0, 1, 1, len(months)]
+    cat = lambda keys: {"category": {"index": {k: i for i, k in enumerate(keys)}}}  # noqa: E731
+    return {"id": ids, "size": sizes, "value": values,
+            "dimension": {"freq": cat(["M"]), "nace_r2": cat([code] if code else []),
+                          "unit": cat(["I21"]), "geo": cat([geo]), "time": cat(months)}}
+
+
+def test_eurostat_parsing(monkeypatch):
+    calls = []
+
+    def fake_request(method, url, params=None, **kw):
+        calls.append((url, dict(params)))
+        if params["nace_r2"] == "C999":
+            return _EurostatResp(_jsonstat(None, params["geo"], {}))
+        # value 2015-02 missing (Eurostat leaves gaps out of the value dict)
+        return _EurostatResp(_jsonstat(params["nace_r2"], params["geo"], {"0": 100.0, "2": 102.0}))
+
+    monkeypatch.setattr(fetch_prices, "_request", fake_request)
+    df = fetch_prices.get_eurostat_prices(["C25", "C999"], start="2015-01", geo="NL",
+                                          log=lambda m: None)
+    assert list(df.columns) == ["C25"]
+    assert df["C25"].iloc[0] == 100.0 and pd.isna(df["C25"].iloc[1]) and df["C25"].iloc[2] == 102.0
+    assert "does not know" in df.attrs["failed"]["C999"]
+    url, params = calls[0]
+    assert url.endswith("/sts_inppd_m")
+    assert params["geo"] == "NL" and params["unit"] == "I21" and params["sinceTimePeriod"] == "2015-01"
+
+
+def test_eurostat_in_app_grouped_by_country(client, monkeypatch):
+    seen = []
+
+    def fake_eurostat(codes, start, end, *, geo, log=None, on_code=None, **kw):
+        seen.append((geo, list(codes)))
+        cols = []
+        for c in codes:
+            on_code(c, "running", None)
+            s = monthly(c, first=50.0 if geo == "DE" else 100.0)
+            cols.append(s)
+            on_code(c, "ok", s)
+        df = pd.concat(cols, axis=1)
+        df.attrs["failed"] = {}
+        return df
+
+    monkeypatch.setattr(fetch_prices, "get_eurostat_prices", fake_eurostat)
+    wb = openpyxl.load_workbook(io.BytesIO(make_input(fred=[(1, "A", "PCU1")])))
+    ws = wb.create_sheet("Eurostat")
+    ws.append(["ID", "Materiaal", "Code", "Land"])
+    ws.append([84, "Steen", "c237", None])
+    ws.append([86, "Cement", "C2351", "de"])
+    ws.append([87, "Cement NL", "C2351", "NL"])
+    buf = io.BytesIO()
+    wb.save(buf)
+    up = client.post("/api/inputs", files={"file": ("in.xlsx", buf.getvalue())}).json()
+    assert up["counts"]["eurostat"] == 3 and not up["errors"]
+    job = client.post("/api/jobs", json={"input_id": up["input_id"]}).json()["job_id"]
+    snap = wait(client, job)
+    assert snap["state"] == "done", snap["error"]
+    assert sorted(seen) == [("DE", ["C2351"]), ("EU27_2020", ["C237"]), ("NL", ["C2351"])]
+    eu = {i["name"]: i["status"] for i in snap["items"] if i["platform"] == "eurostat"}
+    assert eu == {"Steen": "ok", "Cement": "ok", "Cement NL": "ok"}
+    wb = openpyxl.load_workbook(io.BytesIO(client.get(
+        "/api/jobs/%s/files/prijzen" % snap["id"]).content))
+    assert [c.value for c in wb["Datasheet"][1]] == ["ID", 1, 84, 86, 87]
+    bronnen = [r for r in wb["Bronnen"].iter_rows(min_row=2, values_only=True) if r[0]]
+    assert ("sts_inppd_m, DE") in [r[4] for r in bronnen]
+
+
+def test_cbs_chains_old_table_in_front(monkeypatch):
+    """New table from 2018 at level 100, old table from 2015 at level 50: old part doubled."""
+    new = pd.Series([100.0, 102.0, 104.0],
+                    index=pd.date_range("2018-01", periods=3, freq="MS"))
+    old = pd.Series([40.0, 45.0, 50.0, 51.0, 52.0],
+                    index=pd.to_datetime(["2015-01-01", "2016-01-01", "2018-01-01",
+                                          "2018-02-01", "2018-03-01"]))
+    tables = {"NEW": {"237": new}, "OLD": {"237": old, "0811": None}}
+    monkeypatch.setattr(fetch_prices, "_cbs_table_series",
+                        lambda table, code, market: tables[table].get(code))
+    df = fetch_prices.get_cbs_prices(["237", "0811", "9999"], start="2015-01",
+                                     tables=("NEW", "OLD"), log=lambda m: None)
+    s = df["237"].dropna()
+    factor = (100 + 102 + 104) / (50 + 51 + 52)
+    assert s.loc["2015-01-01"] == pytest.approx(40 * factor)
+    assert s.loc["2018-01-01"] == 100.0           # the newest table wins where it has data
+    assert "2015-01 t/m 2016-01" in df.attrs["notes"]["237"]
+    assert set(df.attrs["failed"]) == {"0811", "9999"}
+    assert "staat niet in CBS-tabel" in df.attrs["failed"]["9999"]
+
+
+def test_cbs_price_type_column():
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "CBS"
+    ws.append(["ID", "Materiaal", "Prijs", "Code"])
+    ws.append([1, "A", "Invoerprijzen", "237"])
+    ws.append([2, "B", None, "2331"])
+    ws.append([3, "C", "onzin", "2351"])
+    buf = io.BytesIO()
+    wb.save(buf)
+    parsed = parse_workbook(buf.getvalue())
+    assert [r.market for r in parsed.rows] == ["invoer", None, None]
+    assert any("onzin" in w for w in parsed.warnings)
