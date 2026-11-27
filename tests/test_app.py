@@ -1,5 +1,6 @@
 """End-to-end tests with the API calls replaced by fakes (no network, no keys needed)."""
 import io
+import json
 import time
 
 import openpyxl
@@ -211,6 +212,7 @@ def test_destatis_variable_chosen_by_digit_count(monkeypatch):
     meta = {"Object": {"Content": {"variables": [
         {"code": name} for name in ("GP19M2", "GP19M3", "GP19M4", "GP19M6", "GP19S9")]}}}
     monkeypatch.setattr(fetch_prices, "_fetch_metadata", lambda *a, **k: meta)
+    monkeypatch.setattr(fetch_prices, "_statistic_gp_variables", lambda *a, **k: [])
     used = {}
 
     def fake_download(code, *, classifying_variable, **k):
@@ -231,6 +233,56 @@ def test_destatis_variable_chosen_by_digit_count(monkeypatch):
     assert "5 digits" in df.attrs["failed"]["GP19-23311"]
     assert "GP19M2" in df.attrs["failed"]["GP19-23311"]
     fetch_prices._META_CACHE.clear()
+
+
+def _run_destatis_with(monkeypatch, meta, post):
+    """Run get_destatis_prices with fake metadata and a fake _post_destatis (catalogue)."""
+    monkeypatch.setenv("DESTATIS_TOKEN", "t")
+    fetch_prices._META_CACHE.clear()
+    fetch_prices._STAT_VARS_CACHE.clear()
+    monkeypatch.setattr(fetch_prices, "_fetch_metadata", lambda *a, **k: meta)
+    monkeypatch.setattr(fetch_prices, "_post_destatis", post)
+    used = {}
+
+    def fake_download(code, *, classifying_variable, **k):
+        used[code] = classifying_variable
+        return "csv"
+
+    monkeypatch.setattr(fetch_prices, "_download_destatis_ffcsv", fake_download)
+    monkeypatch.setattr(fetch_prices, "parse_destatis_ffcsv",
+                        lambda text, *, code, **k: (monthly(code), {}))
+    codes = ["GP19-23", "GP19-237", "GP19-0811", "GP19-237011", "GP19-233110002"]
+    fetch_prices.get_destatis_prices(codes, table="61241-0004", log=lambda m: None)
+    fetch_prices._META_CACHE.clear()
+    fetch_prices._STAT_VARS_CACHE.clear()
+    return used
+
+
+def test_destatis_levels_from_statistic_catalogue(monkeypatch):
+    """61241-0004 metadata only names GP19M2; the other levels come from the statistic."""
+    meta = {"Object": {"Structure": {"Rows": [{"Code": "GP19M2"}]}}}
+    calls = []
+
+    def post(path, params, headers, base_url):
+        calls.append((path, params["name"]))
+        return json.dumps({"List": [{"Code": c} for c in
+                                    ("GP19M2", "GP19M3", "GP19M4", "GP19M6", "GP19M9", "GP19X4")]})
+
+    used = _run_destatis_with(monkeypatch, meta, post)
+    assert calls == [("catalogue/variables2statistic", "61241")]
+    assert used == {"GP19-23": "GP19M2", "GP19-237": "GP19M3", "GP19-0811": "GP19M4",
+                    "GP19-237011": "GP19M6", "GP19-233110002": "GP19M9"}
+
+
+def test_destatis_levels_derived_without_catalogue(monkeypatch):
+    meta = {"Object": {"Structure": {"Rows": [{"Code": "GP19M2"}]}}}
+
+    def post(*a, **k):
+        raise fetch_prices.DestatisError("HTTP 404")
+
+    used = _run_destatis_with(monkeypatch, meta, post)
+    assert used == {"GP19-23": "GP19M2", "GP19-237": "GP19M3", "GP19-0811": "GP19M4",
+                    "GP19-237011": "GP19M6", "GP19-233110002": "GP19M9"}
 
 
 def test_gp_digits():

@@ -396,16 +396,44 @@ def _gp_variables_by_digits(candidates: list) -> dict:
     return by_digits
 
 
+# Digit levels of the GP 2019 codes in table 61241-0004, used when the variable names have to
+# be derived from the default variable.
+DESTATIS_DIGIT_LEVELS_GUESS = (2, 3, 4, 5, 6, 9)
+_STAT_VARS_CACHE: dict = {}
+
+
+def _statistic_gp_variables(table: str, language: str, headers: dict, base_url: str) -> list:
+    """GP19 variable names of the statistic behind a table (61241-0004 -> statistic 61241),
+    via catalogue/variables2statistic. Returns [] when the catalogue cannot be read."""
+    statistic = table.split("-")[0]
+    key = (base_url, statistic)
+    if key not in _STAT_VARS_CACHE:
+        try:
+            text = _post_destatis("catalogue/variables2statistic",
+                                  {"name": statistic, "selection": "GP19*", "area": "all",
+                                   "pagelength": "100", "language": language},
+                                  headers, base_url)
+            obj = _try_json(text) or {}
+            found = find_in_metadata(obj.get("List") or [], _GP_VARIABLE)
+        except DestatisError as exc:
+            logger.warning("Could not list the variables of statistic %s: %s", statistic, exc)
+            found = []
+        _STAT_VARS_CACHE[key] = found
+    return _STAT_VARS_CACHE[key]
+
+
 def _resolve_classifying_variable(table: str, requested: Optional[str], language: str,
                                   headers: dict, base_url: str):
     """Return a function code -> GENESIS variable that holds that GP code.
 
     With 'requested' that variable is used for every code (checked against the table
-    metadata when it can be read). Without it the variables are read from the metadata:
-    a table with one GP19 variable uses it for all codes; a table with several (e.g.
-    61241-0004: 2-, 3-, 4-, 5-, 6- and 9-digit codes) gets, per code, the variable whose
-    name ends in the code's number of digits (gp_digits). A code that matches no variable
-    raises DestatisError for that code only. The metadata is cached per table.
+    metadata when it can be read). Without it, the GP19 variables come from the table
+    metadata plus the variables of its statistic (catalogue/variables2statistic): the table
+    metadata of 61241-0004 only names its default GP19M2, the other levels are the
+    alternatives behind "Select another variable". Per code the variable whose name ends in
+    the code's number of digits (gp_digits) is used. If the catalogue cannot be read, the
+    other levels are derived from the default name (GP19M2 -> GP19M3, ...). A code that
+    matches no variable raises DestatisError for that code only. Results are cached.
     """
     meta = _META_CACHE.get((base_url, table))
     if meta is None:
@@ -420,6 +448,7 @@ def _resolve_classifying_variable(table: str, requested: Optional[str], language
             raise DestatisError("Could not read the metadata of table %s to find the GP variable "
                                 "(%s). Pass classifying_variable= explicitly." % (table, exc))
     candidates = find_in_metadata(meta, _GP_VARIABLE)
+    defaults = list(candidates)                 # the variable(s) the table itself shows
     if requested:
         if find_in_metadata(meta, "^%s$" % re.escape(requested)):
             return lambda code: requested
@@ -432,11 +461,20 @@ def _resolve_classifying_variable(table: str, requested: Optional[str], language
     if not candidates:
         raise DestatisError("No GP19<letters><number> variable found in the metadata of table %s. "
                             "Pass classifying_variable= explicitly." % table)
-    if len(candidates) == 1:
-        logger.info("Table %s: using variable %s from its metadata", table, candidates[0])
-        return lambda code: candidates[0]
-
+    # The table metadata only lists the variable shown by default (61241-0004: GP19M2). The
+    # other levels ("Select another variable" in GENESIS) are variables of the statistic,
+    # so ask the catalogue for those as well.
+    extra = _statistic_gp_variables(table, language, headers, base_url)
+    candidates = sorted(set(candidates) | set(extra))
     by_digits = _gp_variables_by_digits(candidates)
+    if not extra and len(by_digits) == 1:
+        # Catalogue not readable: derive the other levels from the default name
+        # (GP19M2 -> GP19M3, GP19M4, ...). A wrong guess fails per code with that name.
+        base = candidates[0]
+        logger.info("Table %s: only variable %s known; other levels derived from its name",
+                    table, base)
+        for n in DESTATIS_DIGIT_LEVELS_GUESS:
+            by_digits.setdefault(n, [re.sub(r"\d+$", str(n), base)])
     logger.info("Table %s: GP19 variables per number of digits: %s", table,
                 ", ".join("%d: %s" % (n, "/".join(v)) for n, v in sorted(by_digits.items())))
 
@@ -446,6 +484,10 @@ def _resolve_classifying_variable(table: str, requested: Optional[str], language
             raise DestatisError("Code %s does not look like GP19-<digits>; cannot choose a "
                                 "variable of table %s." % (code, table))
         names = by_digits.get(n, [])
+        if len(names) > 1:
+            # prefer the family of the table's own variable (GP19M2 -> GP19M...)
+            prefixes = {re.sub(r"\d+$", "", d) for d in defaults}
+            names = [v for v in names if re.sub(r"\d+$", "", v) in prefixes] or names
         if len(names) == 1:
             return names[0]
         if not names:
@@ -602,8 +644,16 @@ def parse_destatis_ffcsv(text: str, *, code: str, classifying_variable: str,
     matches = [n for n, col in attr_cols.items() if (df[col] == code).any()]
     if not matches:
         present = sorted({v for n in var_nums for v in df["%d_variable_code" % n].unique()})
+        values = sorted({v for col in attr_cols.values() for v in df[col].unique()
+                         if str(v).upper().startswith("GP19")})
+        hint = ""
+        if classifying_variable not in present:
+            hint = (" Requested variable %s, but Destatis answered with %s: the variable "
+                    "name is probably wrong for this table." % (classifying_variable, present))
+        elif values:
+            hint = " GP codes in the answer: %s." % ", ".join(values[:10])
         raise DestatisError("Code %s is not a value of any variable in the answer (variables "
-                            "present: %s)." % (code, present))
+                            "present: %s).%s" % (code, present, hint))
     code_num = next((n for n in matches
                      if (df["%d_variable_code" % n] == classifying_variable).any()), matches[0])
     df = df[df[attr_cols[code_num]] == code]
