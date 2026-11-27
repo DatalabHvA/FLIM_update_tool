@@ -70,6 +70,11 @@ def index():
     return FileResponse(STATIC / "index.html")
 
 
+@app.get("/handleiding")
+def manual():
+    return FileResponse(STATIC / "handleiding.html")
+
+
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 

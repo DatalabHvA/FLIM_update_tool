@@ -8,9 +8,14 @@
 </head>
 <body>
 <header>
-  <h1>FLIM update tool</h1>
-  <p class="sub">Haalt importcijfers (UN Comtrade) en prijsindices (CBS, Destatis, FRED, Eurostat) op en maakt
-    <code>material_market_share.xlsx</code> en <code>prijzen.xlsx</code> voor de FLIM-tool.</p>
+  <div class="header-row">
+    <div>
+      <h1>FLIM update tool</h1>
+      <p class="sub">Haalt importcijfers (UN Comtrade) en prijsindices (CBS, Destatis, FRED, Eurostat) op en maakt
+        <code>material_market_share.xlsx</code> en <code>prijzen.xlsx</code> voor de FLIM-tool.</p>
+    </div>
+    <nav class="header-nav"><a href="/handleiding">Handleiding</a></nav>
+  </div>
 </header>
 
 <main>
@@ -20,7 +25,7 @@
     <p>Eén Excel-bestand met een blad per platform: <b>Comtrade</b>, <b>CBS</b>, <b>Destatis</b>, <b>FRED</b>
       en <b>Eurostat</b>, elk met de kolommen <b>Materiaal</b> en <b>Code</b> (prijsbronnen ook <b>ID</b> =
       FLIM-materiaal-id; CBS optioneel <b>Prijs</b>, Destatis optioneel <b>Tabel</b>, Eurostat optioneel <b>Land</b>).
-      <a href="/api/template">Download het voorbeeldbestand</a>.</p>
+      <a href="/api/template">Download het voorbeeldbestand</a> · <a href="/handleiding#invoer">uitleg over het invoerbestand</a>.</p>
     <div class="keys" id="keys"></div>
     <label class="drop" id="drop">
       <input type="file" id="file" accept=".xlsx">

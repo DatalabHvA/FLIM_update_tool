@@ -1,0 +1,272 @@
+<!doctype html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Handleiding – FLIM update tool</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <div class="header-row">
+    <div>
+      <h1>Handleiding FLIM update tool</h1>
+      <p class="sub">Hoe je de invoer van de FLIM-tool bijwerkt met actuele import- en prijscijfers.</p>
+    </div>
+    <nav class="header-nav"><a href="/">← Terug naar de tool</a></nav>
+  </div>
+</header>
+
+<main class="doc">
+  <nav class="card toc">
+    <b>Inhoud</b>
+    <ol>
+      <li><a href="#wat">Wat doet de tool?</a></li>
+      <li><a href="#snel">In het kort: een update in 5 stappen</a></li>
+      <li><a href="#invoer">Het invoerbestand</a></li>
+      <li><a href="#bronnen">De bronnen en welke je kiest</a></li>
+      <li><a href="#instellingen">Instellingen</a></li>
+      <li><a href="#voortgang">Voortgang lezen</a></li>
+      <li><a href="#resultaat">De uitvoerbestanden</a></li>
+      <li><a href="#codes">Codes opzoeken</a></li>
+      <li><a href="#problemen">Problemen oplossen</a></li>
+      <li><a href="#beheer">Voor beheerders</a></li>
+    </ol>
+  </nav>
+
+  <section class="card" id="wat">
+    <h2>1. Wat doet de tool?</h2>
+    <p>De FLIM-tool gebruikt twee invoerbestanden. Deze tool maakt ze automatisch opnieuw met actuele cijfers:</p>
+    <table>
+      <tr><th>Bestand</th><th>Inhoud</th><th>Bron</th></tr>
+      <tr><td><code>material_market_share.xlsx</code></td>
+          <td>Per materiaal: uit welke landen Nederland importeert en welk aandeel elk land heeft (opgeteld 1).</td>
+          <td>UN Comtrade</td></tr>
+      <tr><td><code>prijzen.xlsx</code></td>
+          <td>Per materiaal een maandelijkse prijsindex, gelijk aan 1 in de startmaand.</td>
+          <td>CBS, Destatis, FRED, Eurostat</td></tr>
+    </table>
+    <p>Je levert alleen een lijst met materialen en codes aan. De tool haalt de cijfers op, zet ze in het juiste
+      formaat en laat per code zien wat gelukt is en wat niet.</p>
+  </section>
+
+  <section class="card" id="snel">
+    <h2>2. In het kort: een update in 5 stappen</h2>
+    <ol class="steps">
+      <li><b>Download het voorbeeldbestand</b> op de hoofdpagina en vul het aan of pas het aan. Het bevat de huidige
+        materialen met hun codes en FLIM-ID's.</li>
+      <li><b>Upload het bestand.</b> De tool controleert het meteen en toont fouten (rood) en waarschuwingen (geel).
+        Met een fout kun je niet starten; waarschuwingen zijn ter informatie.</li>
+      <li><b>Kies de instellingen:</b> welke bronnen, het jaar voor de importcijfers en de startmaand voor de prijzen.</li>
+      <li><b>Klik op <i>Start update</i></b> en volg de voortgang. Een volledige run duurt meestal een paar minuten.</li>
+      <li><b>Download de bestanden</b> zodra de run klaar is. Controleer de melding bovenaan het resultaat en
+        <code>rapport.xlsx</code> op mislukte codes.</li>
+    </ol>
+    <p class="note">De bestanden blijven alleen bewaard tot de server herstart. Download ze daarom direct. Er kan
+      maar één update tegelijk lopen; start iemand anders er al een, dan krijg je een melding.</p>
+  </section>
+
+  <section class="card" id="invoer">
+    <h2>3. Het invoerbestand</h2>
+    <p>Eén Excel-bestand (<code>.xlsx</code>) met een blad per bron. De <b>bladnaam</b> bepaalt de bron: hij moet
+      <i>Comtrade</i>, <i>CBS</i>, <i>Destatis</i>, <i>FRED</i> of <i>Eurostat</i> bevatten (hoofdletters maken niet uit).
+      Andere bladen, zoals <i>Uitleg</i>, worden overgeslagen. Op elk blad staan de kolomkoppen in de eerste rij;
+      de volgorde van de kolommen maakt niet uit, de namen wel.</p>
+
+    <table>
+      <tr><th>Blad</th><th>Verplichte kolommen</th><th>Optionele kolommen</th><th>Voorbeeldcode</th></tr>
+      <tr><td><b>Comtrade</b></td><td>Materiaal, Code</td><td>Omschrijving</td><td><code>440792</code> (HS-code)</td></tr>
+      <tr><td><b>CBS</b></td><td>Materiaal, Code</td><td>ID, Prijs</td><td><code>237</code> (ProdCom/CPA)</td></tr>
+      <tr><td><b>Destatis</b></td><td>Materiaal, Code</td><td>ID, Tabel</td><td><code>GP19-237011</code></td></tr>
+      <tr><td><b>FRED</b></td><td>Materiaal, Code</td><td>ID</td><td><code>PCU327991327991</code></td></tr>
+      <tr><td><b>Eurostat</b></td><td>Materiaal, Code</td><td>ID, Land</td><td><code>C237</code> (NACE)</td></tr>
+    </table>
+    <p>Extra kolommen (zoals <i>Thema</i> of <i>Opmerking</i>) mag je toevoegen; de tool negeert ze.</p>
+
+    <h3>Regels die je moet kennen</h3>
+    <ul>
+      <li><b>ID</b> is het FLIM-materiaal-ID en komt in rij 1 van <code>prijzen.xlsx</code>. Elke combinatie van
+        materiaal en bron heeft een <b>eigen, uniek ID</b>. Heeft Marble een CBS- én een FRED-reeks, dan zijn dat twee
+        ID's. Een ontbrekend of dubbel ID geeft een waarschuwing.</li>
+      <li><b>Materiaalnamen</b> zijn in beide uitvoerbestanden gelijk aan wat je invult. Gebruik dus dezelfde spelling
+        als in FLIM en als op het Comtrade-blad.</li>
+      <li><b>Comtrade: zelfde naam, meerdere codes.</b> Dan worden de importen van die codes opgeteld tot één
+        marktaandeel. Wil je aparte materialen, geef ze dan een andere naam.</li>
+      <li><b>Prijsbronnen: zelfde code bij meerdere materialen</b> mag. Ze krijgen dezelfde reeks, elk onder hun eigen ID.</li>
+      <li><b>Voorloopnullen:</b> zet codes als tekst in Excel. Excel maakt van <code>0811</code> anders <code>811</code>.
+        Bij Comtrade vult de tool een weggevallen nul aan; bij CBS krijg je een waarschuwing.</li>
+      <li>Rijen zonder code worden overgeslagen (met een waarschuwing).</li>
+    </ul>
+  </section>
+
+  <section class="card" id="bronnen">
+    <h2>4. De bronnen en welke je kiest</h2>
+    <p>De vier prijsbronnen meten niet hetzelfde. Kies per materiaal de bron die het best past bij wat FLIM moet laten zien.</p>
+    <table>
+      <tr><th>Bron</th><th>Wat het meet</th><th>Sleutel nodig</th><th>Wanneer gebruiken</th></tr>
+      <tr><td><b>CBS</b> <span class="pill st-ok">aanbevolen</span></td>
+          <td><b>Verbruiksprijzen in Nederland</b>: invoerprijzen plus wat Nederlandse producenten in Nederland
+            vragen. Dus de marktprijs die Nederlandse afnemers betalen, waar het product ook gemaakt is.</td>
+          <td>nee</td><td>Standaard voor prijzen in FLIM.</td></tr>
+      <tr><td><b>Eurostat</b></td>
+          <td>Producentenprijzen in de EU (of een gekozen land) op de eigen binnenlandse markt.</td>
+          <td>nee</td><td>Vergelijking of back-up; Europees beeld.</td></tr>
+      <tr><td><b>Destatis</b></td>
+          <td>Producentenprijzen in Duitsland, zeer gedetailleerd (tot 9-cijferige productcodes).</td>
+          <td>ja</td><td>Als je een heel specifiek product nodig hebt dat CBS niet apart heeft.</td></tr>
+      <tr><td><b>FRED</b></td>
+          <td>Producentenprijzen in de Verenigde Staten.</td>
+          <td>ja</td><td>Vergelijking; specifieke Amerikaanse reeksen.</td></tr>
+      <tr><td><b>UN Comtrade</b></td>
+          <td>Importwaarde van Nederland per land van herkomst (jaarcijfers).</td>
+          <td>ja</td><td>Altijd, voor de marktaandelen.</td></tr>
+    </table>
+
+    <h3>CBS in detail</h3>
+    <ul>
+      <li><b>Code</b>: de ProdCom/CPA-code zoals CBS die schrijft, bv. <code>237</code> (bewerkte natuursteen),
+        <code>2331</code> (keramische tegels), <code>2351</code> (cement), <code>2361</code> (betonproducten),
+        <code>2311</code> (vlakglas).</li>
+      <li><b>Prijs</b> (optioneel): <code>verbruik</code> (standaard), <code>invoer</code>, <code>binnenland</code>,
+        <code>buitenland</code> of <code>afzet</code>.</li>
+      <li>De huidige CBS-tabel (85770NED) begint in 2018. De tool koppelt hem automatisch aan de oudere tabel
+        (83935NED, 2012–2023), zodat reeksen vanaf 2015 beschikbaar zijn. Bij de koppeling wordt het oude deel zo
+        geschaald dat het in 2018 naadloos aansluit; vanaf 2018 gelden altijd de nieuwe cijfers. In de voortgang en
+        op het blad <i>Bronnen</i> staat welke maanden uit de oude tabel komen.</li>
+    </ul>
+
+    <h3>Eurostat in detail</h3>
+    <ul>
+      <li><b>Code</b>: een NACE-code, bv. <code>C237</code>, <code>C25</code>. Dataset: <i>sts_inppd_m</i>
+        (producentenprijzen, binnenlandse markt, per maand).</li>
+      <li><b>Land</b> (optioneel): bv. <code>NL</code>, <code>DE</code>. Leeg = de instelling <i>Eurostat-land</i>
+        (standaard <code>EU27_2020</code>).</li>
+      <li>Niet elke code heeft cijfers voor elk land. Kies dan een bredere code (bv. <code>C231</code> in plaats van
+        <code>C2311</code>) of een ander land.</li>
+    </ul>
+
+    <h3>Destatis in detail</h3>
+    <ul>
+      <li><b>Code</b>: <code>GP19-</code> gevolgd door cijfers. Het <b>aantal cijfers</b> (streepjes tellen niet mee)
+        bepaalt het niveau: 2, 3, 4, 5, 6 of 9 cijfers. Bv. <code>GP19-0811</code> = 4,
+        <code>GP19-237011</code> = 6, <code>GP19-233110002</code> = 9. De tool kiest zelf de juiste variabele.</li>
+      <li><b>Tabel</b> (optioneel): standaard 61241-0004.</li>
+    </ul>
+  </section>
+
+  <section class="card" id="instellingen">
+    <h2>5. Instellingen</h2>
+    <table>
+      <tr><th>Instelling</th><th>Betekenis</th><th>Standaard</th></tr>
+      <tr><td>Platforms</td><td>Welke bronnen je ophaalt. Alleen aangevinkte bronnen komen in de uitvoer.</td><td>alle met codes</td></tr>
+      <tr><td>Jaar (Comtrade)</td><td>Het jaar van de importcijfers. Recente jaren zijn soms nog niet compleet;
+        krijg je veel "geen data", kies dan een jaar eerder.</td><td>huidig jaar − 2</td></tr>
+      <tr><td>Rapporteur</td><td>Het importerende land als getal; 528 = Nederland.</td><td>528</td></tr>
+      <tr><td>Startmaand</td><td>Eerste maand van de prijsreeksen én de <b>basismaand</b>: alle reeksen zijn daar 1.</td><td>2015-01</td></tr>
+      <tr><td>Eindmaand</td><td>Laatste maand. Leeg = alles wat beschikbaar is.</td><td>leeg</td></tr>
+      <tr><td>Destatis-tabel</td><td>Tabel voor Destatis-rijen zonder eigen <i>Tabel</i>.</td><td>61241-0004</td></tr>
+      <tr><td>Eurostat-land</td><td>Land voor Eurostat-rijen zonder eigen <i>Land</i>.</td><td>EU27_2020</td></tr>
+    </table>
+  </section>
+
+  <section class="card" id="voortgang">
+    <h2>6. Voortgang lezen</h2>
+    <p>Per bron zie je een balk en tellers; daaronder staat per code de status met een toelichting.</p>
+    <table>
+      <tr><th>Status</th><th>Betekenis</th></tr>
+      <tr><td><span class="pill st-pending">wacht</span></td><td>Nog niet aan de beurt.</td></tr>
+      <tr><td><span class="pill st-running">bezig</span></td><td>Wordt nu opgehaald.</td></tr>
+      <tr><td><span class="pill st-fetched">opgehaald</span></td><td>Comtrade: antwoord binnen, wordt aan het eind verwerkt.</td></tr>
+      <tr><td><span class="pill st-ok">gelukt</span></td><td>Data opgehaald; de melding zegt hoeveel maanden of partnerlanden.</td></tr>
+      <tr><td><span class="pill st-nodata">geen data</span></td><td>De bron antwoordde, maar zonder cijfers (bv. geen import in dat jaar).</td></tr>
+      <tr><td><span class="pill st-failed">mislukt</span></td><td>Er ging iets mis; de melding zegt wat. Is een melding ingekort, beweeg er dan overheen voor de volledige tekst.</td></tr>
+    </table>
+    <p>Met <i>Alleen problemen</i> filter je op mislukt en geen data. Onder <i>Log</i> staat elke stap met tijd.
+      Met <i>Afbreken</i> stop je een run; wat al is opgehaald gaat dan verloren.</p>
+  </section>
+
+  <section class="card" id="resultaat">
+    <h2>7. De uitvoerbestanden</h2>
+    <h3><code>prijzen.xlsx</code></h3>
+    <ul>
+      <li><b>Datasheet</b>: rij 1 = ID, rij 2 = materiaal, kolom A = maand. Waarden zijn gedeeld door de waarde in de
+        startmaand, dus de startmaand is 1. Dit blad leest FLIM.</li>
+      <li><b>Ruwe indices</b>: dezelfde reeksen zoals de bron ze levert (niet genormaliseerd).</li>
+      <li><b>Bronnen</b>: per reeks de bron, code, tabel/land/prijssoort, status, eerste en laatste maand, basismaand
+        en meldingen (bv. over de CBS-koppeling).</li>
+    </ul>
+    <p>Mist een reeks de startmaand (bv. een CBS-code die pas in 2018 begint), dan wordt hij op zijn eerste maand
+      genormaliseerd en krijg je een waarschuwing. Zo'n reeks is niet goed vergelijkbaar met de rest; kies liever een
+      andere code.</p>
+    <h3><code>material_market_share.xlsx</code></h3>
+    <p>Kolommen <i>Materiaal2</i>, <i>partnerISO</i> (landcode) en <i>market_share</i>, per materiaal gesorteerd van groot
+      naar klein; de aandelen tellen per materiaal op tot 1. "World" (W00) is weggelaten.</p>
+    <h3><code>rapport.xlsx</code></h3>
+    <p>Status en melding per code, de gebruikte instellingen en de volledige log. Handig om te bewaren bij een update
+      of om problemen door te sturen.</p>
+    <p class="note">Mislukte codes ontbreken in de uitvoer. Controleer daarom altijd de melding bovenaan het resultaat.</p>
+  </section>
+
+  <section class="card" id="codes">
+    <h2>8. Codes opzoeken</h2>
+    <table>
+      <tr><th>Bron</th><th>Waar</th><th>Tip</th></tr>
+      <tr><td>CBS</td><td><a href="https://opendata.cbs.nl/statline/#/CBS/nl/dataset/85770NED/table" target="_blank" rel="noopener">StatLine-tabel 85770NED</a></td>
+          <td>Kies bij <i>Alle ProdCom coderingen</i> je product; het getal vóór de naam is de code.</td></tr>
+      <tr><td>Eurostat</td><td><a href="https://ec.europa.eu/eurostat/databrowser/view/sts_inppd_m/default/table" target="_blank" rel="noopener">Databrowser sts_inppd_m</a></td>
+          <td>De NACE-code staat bij de activiteit, bv. C237.</td></tr>
+      <tr><td>Destatis</td><td><a href="https://www-genesis.destatis.de/datenbank/online/table/61241-0004" target="_blank" rel="noopener">GENESIS-tabel 61241-0004</a></td>
+          <td>Kies via <i>Select another variable</i> het aantal cijfers; de code staat als GP19-….</td></tr>
+      <tr><td>FRED</td><td><a href="https://fred.stlouisfed.org/" target="_blank" rel="noopener">fred.stlouisfed.org</a></td>
+          <td>De series-ID staat in de URL, bv. PCU327991327991.</td></tr>
+      <tr><td>UN Comtrade</td><td><a href="https://www.tariffnumber.com/" target="_blank" rel="noopener">tariffnumber.com</a></td>
+          <td>Gebruik de HS-code met 4 of 6 cijfers.</td></tr>
+    </table>
+  </section>
+
+  <section class="card" id="problemen">
+    <h2>9. Problemen oplossen</h2>
+    <dl class="faq">
+      <dt>"Geen bladen gevonden met de naam Comtrade, CBS, …"</dt>
+      <dd>Hernoem de bladen zodat de naam van de bron erin staat, of begin met het voorbeeldbestand.</dd>
+      <dt>"kolom 'Materiaal' en 'Code' niet gevonden"</dt>
+      <dd>De kolomkoppen moeten in de eerste rij staan. De melding laat zien welke koppen wel gevonden zijn.</dd>
+      <dt>Een bron staat rood met "sleutel ontbreekt"</dt>
+      <dd>De API-sleutel van die bron is niet ingesteld op de server. Vraag de beheerder (zie hieronder). De andere bronnen werken gewoon.</dd>
+      <dt>"staat niet in CBS-tabel"</dt>
+      <dd>Controleer de code in StatLine. Let op een weggevallen voorloopnul.</dd>
+      <dt>Eurostat: "does not know this value of nace_r2 / geo"</dt>
+      <dd>De code of het land bestaat niet in de dataset. Controleer de schrijfwijze (bv. <code>C237</code>, <code>NL</code>).</dd>
+      <dt>Eurostat: "has no values for this code and country"</dt>
+      <dd>De combinatie bestaat, maar er zijn geen cijfers. Kies een bredere code of een ander land.</dd>
+      <dt>Destatis: "has no GP19 variable for N-digit codes"</dt>
+      <dd>Het aantal cijfers van de code past niet bij de tabel. Controleer de code; de melding noemt de variabelen die de tabel wel heeft.</dd>
+      <dt>Comtrade: veel codes "geen data"</dt>
+      <dd>Het gekozen jaar is waarschijnlijk nog niet (volledig) gepubliceerd. Kies een jaar eerder.</dd>
+      <dt>Comtrade: "STOPPING" of "server asks to wait"</dt>
+      <dd>De dagelijkse limiet van de API-sleutel is bereikt of de dienst is tijdelijk niet beschikbaar. Probeer het later opnieuw.</dd>
+      <dt>"Er loopt al een update"</dt>
+      <dd>Er kan maar één run tegelijk. Wacht tot die klaar is; open de hoofdpagina om de lopende run te volgen.</dd>
+      <dt>Mijn resultaat is weg</dt>
+      <dd>Na een herstart of nieuwe deploy van de server zijn eerdere runs weg. Start de update opnieuw.</dd>
+    </dl>
+  </section>
+
+  <section class="card" id="beheer">
+    <h2>10. Voor beheerders</h2>
+    <p>De tool draait als Docker-container (Railway, later Azure). Instellingen gaan via omgevingsvariabelen
+      (Railway: <i>Variables</i>; Azure: App Settings, eventueel met Key Vault-verwijzingen):</p>
+    <table>
+      <tr><th>Variabele</th><th>Doel</th></tr>
+      <tr><td><code>COMTRADE_API_KEY</code></td><td>Sleutel voor UN Comtrade.</td></tr>
+      <tr><td><code>DESTATIS_TOKEN</code></td><td>Token voor Destatis GENESIS-Online (of <code>DESTATIS_USER</code> + <code>DESTATIS_PASSWORD</code>).</td></tr>
+      <tr><td><code>FRED_API_KEY</code></td><td>Sleutel voor FRED.</td></tr>
+      <tr><td><code>APP_PASSWORD</code></td><td>Zet een wachtwoord op de tool (sterk aanbevolen; de URL is openbaar).</td></tr>
+      <tr><td><code>APP_USERNAME</code></td><td>Gebruikersnaam bij dat wachtwoord (standaard <code>hva</code>).</td></tr>
+    </table>
+    <p>CBS en Eurostat hebben geen sleutel nodig. Draai de tool met één instantie: lopende runs en resultaten staan
+      in het geheugen. Technische details staan in de README van de repository.</p>
+  </section>
+</main>
+</body>
+</html>

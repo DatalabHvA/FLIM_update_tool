@@ -352,3 +352,9 @@ def test_cbs_price_type_column():
     parsed = parse_workbook(buf.getvalue())
     assert [r.market for r in parsed.rows] == ["invoer", None, None]
     assert any("onzin" in w for w in parsed.warnings)
+
+
+def test_manual_page_linked_from_main_page(client):
+    page = client.get("/handleiding")
+    assert page.status_code == 200 and "Handleiding FLIM update tool" in page.text
+    assert 'href="/handleiding"' in client.get("/").text
