@@ -180,7 +180,7 @@ def test_real_price_functions_with_log_hooks(monkeypatch):
     monkeypatch.setenv("DESTATIS_TOKEN", "t")
     monkeypatch.setenv("FRED_API_KEY", "k")
     monkeypatch.setattr(fetch_prices, "_resolve_classifying_variable",
-                        lambda *a, **k: (lambda code: "GP19M6"))
+                        lambda *a, **k: (lambda code: ("GP19M6", code)))
     monkeypatch.setattr(fetch_prices, "_download_destatis_ffcsv", lambda code, **k: "csv")
     monkeypatch.setattr(fetch_prices, "parse_destatis_ffcsv",
                         lambda text, *, code, **k: (monthly(code), {}))
@@ -205,84 +205,101 @@ def test_real_price_functions_with_log_hooks(monkeypatch):
     assert any("GP19-1" in line for line in lines)
 
 
-def test_destatis_variable_chosen_by_digit_count(monkeypatch):
-    """Table with one GP19 variable per code level: each code gets the variable for its digits."""
+# Structure of statistic 61241 as GENESIS returns it (checked live): the table metadata only
+# names GP19M2, the statistic has one variable per level and the 9-digit level is GP19N1.
+DESTATIS_VARIABLES = [("GP19M2", "GP2019 (2-digit codes): Industrial products"),
+                      ("GP19M3", "GP2019 (3-digit codes): Industrial products"),
+                      ("GP19M4", "GP2019 (4-digit codes): Industrial products"),
+                      ("GP19M6", "GP2019 (6-digit codes): Industrial products"),
+                      ("GP19N1", "GP2019 (selected 9-digit codes): Industr. Products"),
+                      ("GP19N2", "GP2019 (special items): Industrial products")]
+DESTATIS_VALUES = {"GP19M2": ["GP19-23"], "GP19M3": ["GP19-237"],
+                   "GP19M4": ["GP19-0811", "GP19-0501"], "GP19M6": ["GP19-237011", "GP19-237012"],
+                   "GP19N1": ["GP19-233110002", "GP19--052010000", "GP19-2312121001"],
+                   "GP19N2": ["GP19-05-01"]}
+
+
+def _run_destatis_with(monkeypatch, post, codes):
+    """get_destatis_prices with fake metadata and a fake _post_destatis (catalogue calls).
+    Returns ({input code: (variable, code sent)}, result DataFrame)."""
     monkeypatch.setenv("DESTATIS_TOKEN", "t")
-    fetch_prices._META_CACHE.clear()
-    meta = {"Object": {"Content": {"variables": [
-        {"code": name} for name in ("GP19M2", "GP19M3", "GP19M4", "GP19M6", "GP19S9")]}}}
-    monkeypatch.setattr(fetch_prices, "_fetch_metadata", lambda *a, **k: meta)
-    monkeypatch.setattr(fetch_prices, "_statistic_gp_variables", lambda *a, **k: [])
-    used = {}
-
-    def fake_download(code, *, classifying_variable, **k):
-        used[code] = classifying_variable
-        return "csv"
-
-    monkeypatch.setattr(fetch_prices, "_download_destatis_ffcsv", fake_download)
-    monkeypatch.setattr(fetch_prices, "parse_destatis_ffcsv",
-                        lambda text, *, code, **k: (monthly(code), {}))
-    codes = ["GP19-23", "GP19-237", "GP19-0811", "GP19-23--31", "GP19-237011",
-             "GP19-233110002", "GP19-23311"]
-    df = fetch_prices.get_destatis_prices(codes, table="61241-0004", log=lambda m: None)
-    assert used == {"GP19-23": "GP19M2", "GP19-237": "GP19M3", "GP19-0811": "GP19M4",
-                    "GP19-23--31": "GP19M4", "GP19-237011": "GP19M6",
-                    "GP19-233110002": "GP19S9"}
-    # 5 digits: no variable in this (fake) table -> only that code fails, with the reason
-    assert list(df.attrs["failed"]) == ["GP19-23311"]
-    assert "5 digits" in df.attrs["failed"]["GP19-23311"]
-    assert "GP19M2" in df.attrs["failed"]["GP19-23311"]
-    fetch_prices._META_CACHE.clear()
-
-
-def _run_destatis_with(monkeypatch, meta, post):
-    """Run get_destatis_prices with fake metadata and a fake _post_destatis (catalogue)."""
-    monkeypatch.setenv("DESTATIS_TOKEN", "t")
-    fetch_prices._META_CACHE.clear()
-    fetch_prices._STAT_VARS_CACHE.clear()
+    for cache in (fetch_prices._META_CACHE, fetch_prices._STAT_VARS_CACHE,
+                  fetch_prices._VALUES_CACHE):
+        cache.clear()
+    meta = {"Object": {"Structure": {"Rows": [{"Code": "GP19M2"}]}}}
     monkeypatch.setattr(fetch_prices, "_fetch_metadata", lambda *a, **k: meta)
     monkeypatch.setattr(fetch_prices, "_post_destatis", post)
-    used = {}
+    used, sent = {}, []
 
     def fake_download(code, *, classifying_variable, **k):
-        used[code] = classifying_variable
+        sent.append((classifying_variable, code))
         return "csv"
 
+    def fake_parse(text, *, code, **k):
+        return monthly(code), {}
+
     monkeypatch.setattr(fetch_prices, "_download_destatis_ffcsv", fake_download)
-    monkeypatch.setattr(fetch_prices, "parse_destatis_ffcsv",
-                        lambda text, *, code, **k: (monthly(code), {}))
-    codes = ["GP19-23", "GP19-237", "GP19-0811", "GP19-237011", "GP19-233110002"]
-    fetch_prices.get_destatis_prices(codes, table="61241-0004", log=lambda m: None)
-    fetch_prices._META_CACHE.clear()
-    fetch_prices._STAT_VARS_CACHE.clear()
-    return used
+    monkeypatch.setattr(fetch_prices, "parse_destatis_ffcsv", fake_parse)
+    df = fetch_prices.get_destatis_prices(codes, table="61241-0004", log=lambda m: None)
+    ok = [c for c in codes if c not in df.attrs["failed"]]
+    used = dict(zip(ok, sent))
+    for cache in (fetch_prices._META_CACHE, fetch_prices._STAT_VARS_CACHE,
+                  fetch_prices._VALUES_CACHE):
+        cache.clear()
+    return used, df
 
 
-def test_destatis_levels_from_statistic_catalogue(monkeypatch):
-    """61241-0004 metadata only names GP19M2; the other levels come from the statistic."""
-    meta = {"Object": {"Structure": {"Rows": [{"Code": "GP19M2"}]}}}
-    calls = []
-
+def _fake_catalogue(calls=None):
     def post(path, params, headers, base_url):
-        calls.append((path, params["name"]))
-        return json.dumps({"List": [{"Code": c} for c in
-                                    ("GP19M2", "GP19M3", "GP19M4", "GP19M6", "GP19M9", "GP19X4")]})
+        if calls is not None:
+            calls.append((path, params["name"]))
+        if path == "catalogue/variables2statistic":
+            assert params["name"] == "61241"
+            return json.dumps({"List": [{"Code": c, "Content": d}
+                                        for c, d in DESTATIS_VARIABLES]})
+        if path == "catalogue/values2variable":
+            return json.dumps({"List": [{"Code": c} for c in DESTATIS_VALUES[params["name"]]]})
+        raise AssertionError(path)
+    return post
 
-    used = _run_destatis_with(monkeypatch, meta, post)
-    assert calls == [("catalogue/variables2statistic", "61241")]
-    assert used == {"GP19-23": "GP19M2", "GP19-237": "GP19M3", "GP19-0811": "GP19M4",
-                    "GP19-237011": "GP19M6", "GP19-233110002": "GP19M9"}
+
+def test_destatis_codes_looked_up_in_value_lists(monkeypatch):
+    """Each code gets the variable that holds it; '-' vs '--' does not matter; the column
+    keeps the code as given; unknown codes fail before any data is requested."""
+    calls = []
+    codes = ["GP19-23", "GP19-237", "GP19-0811", "GP19-237011", "GP19-233110002",
+             "GP19-052010000", "gp19-2312121001", "GP19-237013"]
+    used, df = _run_destatis_with(monkeypatch, _fake_catalogue(calls), codes)
+    assert used == {"GP19-23": ("GP19M2", "GP19-23"), "GP19-237": ("GP19M3", "GP19-237"),
+                    "GP19-0811": ("GP19M4", "GP19-0811"),
+                    "GP19-237011": ("GP19M6", "GP19-237011"),
+                    "GP19-233110002": ("GP19N1", "GP19-233110002"),
+                    "GP19-052010000": ("GP19N1", "GP19--052010000"),
+                    "gp19-2312121001": ("GP19N1", "GP19-2312121001")}
+    assert "GP19-052010000" in df.columns            # input spelling kept in the output
+    assert list(df.attrs["failed"]) == ["GP19-237013"]
+    msg = df.attrs["failed"]["GP19-237013"]
+    assert "does not exist" in msg and "GP19-237011" in msg and "GP19-237012" in msg
+    # catalogue read once per run: 1 statistic + 6 variables
+    assert len(calls) == 7
 
 
-def test_destatis_levels_derived_without_catalogue(monkeypatch):
-    meta = {"Object": {"Structure": {"Rows": [{"Code": "GP19M2"}]}}}
+def test_destatis_dash_ambiguity_prefers_digit_level(monkeypatch):
+    """GP19-0501 (4-digit level) and special item GP19-05-01 look the same without dashes."""
+    used, df = _run_destatis_with(monkeypatch, _fake_catalogue(), ["GP19-0501", "GP19-05-01"])
+    assert used == {"GP19-0501": ("GP19M4", "GP19-0501"),
+                    "GP19-05-01": ("GP19N2", "GP19-05-01")}
 
+
+def test_destatis_levels_by_digits_without_catalogue(monkeypatch):
     def post(*a, **k):
         raise fetch_prices.DestatisError("HTTP 404")
 
-    used = _run_destatis_with(monkeypatch, meta, post)
-    assert used == {"GP19-23": "GP19M2", "GP19-237": "GP19M3", "GP19-0811": "GP19M4",
-                    "GP19-237011": "GP19M6", "GP19-233110002": "GP19M9"}
+    used, df = _run_destatis_with(monkeypatch, post, [
+        "GP19-23", "GP19-237", "GP19-0811", "GP19-237011", "GP19-233110002", "GP19-2312121001"])
+    assert {c: v for c, (v, _) in used.items()} == {
+        "GP19-23": "GP19M2", "GP19-237": "GP19M3", "GP19-0811": "GP19M4",
+        "GP19-237011": "GP19M6", "GP19-233110002": "GP19N1", "GP19-2312121001": "GP19N1"}
 
 
 def test_gp_digits():

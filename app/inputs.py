@@ -26,8 +26,9 @@ PLATFORMS = ("comtrade", "cbs", "destatis", "fred", "eurostat")
 PRICE_PLATFORMS = ("cbs", "destatis", "fred", "eurostat")
 # CBS price types (column "Prijs"); "verbruik" = imports + domestic sales = Dutch market price
 CBS_MARKETS = ("verbruik", "invoer", "binnenland", "buitenland", "afzet")
-# GP 2019 code levels in Destatis table 61241-0004 (digits after "GP19", dashes ignored)
-DESTATIS_DIGIT_LEVELS = (2, 3, 4, 5, 6, 9)
+# Digits after "GP19" (dashes ignored) of the codes in Destatis table 61241-0004: levels 2-6
+# plus "selected 9-digit codes", which also holds 8- and 10-digit codes (some with "--")
+DESTATIS_DIGIT_LEVELS = (2, 3, 4, 5, 6, 7, 8, 9, 10)
 PLATFORM_LABELS = {"comtrade": "UN Comtrade", "cbs": "CBS", "destatis": "Destatis",
                    "fred": "FRED", "eurostat": "Eurostat"}
 

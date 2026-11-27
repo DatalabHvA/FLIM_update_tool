@@ -147,9 +147,12 @@
 
     <h3>Destatis in detail</h3>
     <ul>
-      <li><b>Code</b>: <code>GP19-</code> gevolgd door cijfers. Het <b>aantal cijfers</b> (streepjes tellen niet mee)
-        bepaalt het niveau: 2, 3, 4, 5, 6 of 9 cijfers. Bv. <code>GP19-0811</code> = 4,
-        <code>GP19-237011</code> = 6, <code>GP19-233110002</code> = 9. De tool kiest zelf de juiste variabele.</li>
+      <li><b>Code</b>: <code>GP19-</code> gevolgd door cijfers, bv. <code>GP19-0811</code>, <code>GP19-237011</code>
+        of <code>GP19-233110002</code>. De tool zoekt elke code op in de codelijsten van Destatis en kiest zelf het
+        juiste niveau (2-, 3-, 4-, 5-, 6-cijfercodes of geselecteerde 9-cijfercodes).</li>
+      <li><b>Streepjes</b>: Destatis schrijft sommige codes met <code>--</code> (bv. <code>GP19--052010000</code>).
+        Je mag zowel <code>-</code> als <code>--</code> gebruiken; de tool vindt de schrijfwijze van Destatis.</li>
+      <li>Een code die niet bij Destatis bestaat, mislukt meteen. De melding noemt codes die er wel op lijken.</li>
       <li><b>Tabel</b> (optioneel): standaard 61241-0004.</li>
     </ul>
   </section>
@@ -239,8 +242,10 @@
       <dd>De code of het land bestaat niet in de dataset. Controleer de schrijfwijze (bv. <code>C237</code>, <code>NL</code>).</dd>
       <dt>Eurostat: "has no values for this code and country"</dt>
       <dd>De combinatie bestaat, maar er zijn geen cijfers. Kies een bredere code of een ander land.</dd>
+      <dt>Destatis: "does not exist in Destatis table"</dt>
+      <dd>Destatis kent deze code niet. Controleer de code; de melding noemt codes die er wel op lijken.</dd>
       <dt>Destatis: "has no GP19 variable for N-digit codes"</dt>
-      <dd>Het aantal cijfers van de code past niet bij de tabel. Controleer de code; de melding noemt de variabelen die de tabel wel heeft.</dd>
+      <dd>De codelijsten van Destatis waren niet te lezen en het aantal cijfers past bij geen enkel niveau. Probeer het later opnieuw of controleer de code.</dd>
       <dt>Comtrade: veel codes "geen data"</dt>
       <dd>Het gekozen jaar is waarschijnlijk nog niet (volledig) gepubliceerd. Kies een jaar eerder.</dd>
       <dt>Comtrade: "STOPPING" of "server asks to wait"</dt>

@@ -28,11 +28,17 @@ They still work as before in a notebook or from the command line. The tool only 
 
 ## Destatis codes and tables
 
-The default table is **61241-0004**. It has one variable per GP 2019 code level: 2-, 3-, 4-, 5-, 6- and
-selected 9-digit codes. The tool counts the digits after `GP19`, ignoring dashes, and uses the
-variable for that level. For example, `GP19-0811` gives 4 digits, `GP19-237011` gives 6 and `GP19-233110002` gives 9.
-The variable names are read from the table's metadata on every run. If a code matches no variable,
-only that code fails, and its message lists the variables the table has.
+The default table is **61241-0004**. It has one variable per GP 2019 code level. The table metadata only
+names `GP19M2` (2-digit codes); the others are the alternatives behind *Select another variable* in GENESIS:
+`GP19M3` to `GP19M6`, `GP19N1` ("selected 9-digit codes", which also holds 8- and 10-digit codes) and `GP19N2`
+(special items).
+
+At the start of each run the tool lists these variables with all their codes, through
+`catalogue/variables2statistic` and `catalogue/values2variable`. It then looks up each code in those lists:
+- An exact match is used first. If there is none, dashes are ignored, so `GP19-052010000` finds Destatis's
+  `GP19--052010000`. The output keeps the code as written in the input.
+- A code that is in no list fails at once, with similar codes in the message.
+- If the lists cannot be read, the variable is chosen by the number of digits after `GP19`.
 A different table per code can be set in the `Tabel` column, for example the older 61241-0006.
 
 ## CBS: market prices in the Netherlands (recommended)
